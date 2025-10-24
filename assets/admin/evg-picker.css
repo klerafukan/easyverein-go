@@ -1,0 +1,104 @@
+.evg-group-select{
+    margin-top:12px;
+    border:1px solid #dcdcde;
+    border-radius:4px;
+    background:#ffffff;
+    max-width:720px;
+    box-shadow:0 1px 1px rgba(0,0,0,0.05);
+}
+
+.evg-group-select__toolbar{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:10px 12px;
+    border-bottom:1px solid #dcdcde;
+    background:#f6f7f7;
+}
+
+.evg-group-select__toolbar .evg-groups-search{
+    flex:1 1 auto;
+    max-width:280px;
+}
+
+.evg-group-select__toolbar .description{
+    margin-left:auto;
+    color:#50575e;
+    font-size:12px;
+}
+
+.evg-group-table-wrapper{
+    max-height:320px;
+    overflow:auto;
+}
+
+.evg-groups-table .column-title strong{
+    display:block;
+    font-weight:600;
+}
+
+.evg-groups-table .column-short{
+    width:140px;
+    color:#555d66;
+    font-size:12px;
+}
+
+.evg-groups-table .column-id{
+    width:160px;
+    color:#646970;
+    font-size:12px;
+}
+
+.evg-groups-table .check-column{
+    width:46px;
+    vertical-align:middle;
+}
+
+.evg-select-toggle{
+    margin:0;
+}
+
+.evg-select-toggle:disabled{
+    opacity:0.6;
+    cursor:not-allowed;
+}
+
+.evg-group-row{
+    cursor:pointer;
+    transition:background-color 0.15s ease;
+}
+
+.evg-group-row:hover{
+    background:#f6f7f7;
+}
+
+.evg-group-row.is-selected{
+    background:#f0f6ff;
+}
+
+.evg-group-row.is-selected .column-title strong{
+    color:#1d4f8b;
+}
+
+.evg-group-row .evg-group-checkbox{
+    margin:0;
+}
+
+.evg-no-groups{
+    text-align:center;
+    padding:18px;
+    color:#646970;
+    background:#f6f7f7;
+}
+
+.evg-group-select.is-disabled{
+    opacity:0.6;
+}
+
+.evg-group-select.is-disabled .evg-group-table-wrapper{
+    pointer-events:none;
+}
+
+.evg-group-select.is-disabled .evg-group-row{
+    cursor:not-allowed;
+}

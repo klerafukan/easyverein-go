@@ -1,0 +1,286 @@
+/* EasyVerein table styles aligned with WordPress look & feel */
+.evg-wrap {
+    background: #ffffff;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    margin: 20px 0;
+}
+
+.evg-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 16px;
+    background: #f6f7f7;
+    border-bottom: 1px solid #dcdcde;
+    color: #1d2327;
+    flex-wrap: wrap;
+}
+
+.evg-search {
+    flex: 1 1 auto;
+    max-width: 320px;
+    padding: 6px 10px;
+    border: 1px solid #8c8f94;
+    border-radius: 3px;
+    background: #ffffff;
+    font-size: 14px;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.evg-search:focus {
+    outline: none;
+    border-color: #007cba;
+    box-shadow: 0 0 0 1px #007cba;
+}
+
+.evg-meta{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:12px;
+    padding:12px 16px;
+    border-bottom:1px solid #dcdcde;
+    background:#ffffff;
+    font-size:13px;
+    color:#2c3338;
+}
+
+.evg-count{
+    font-weight:600;
+    white-space:nowrap;
+}
+
+.evg-count span{
+    font-variant-numeric:tabular-nums;
+}
+
+.evg-pagination{
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+
+.evg-pagination .button{
+    min-width:40px;
+    padding:4px 10px;
+}
+
+.evg-page-info{
+    font-weight:500;
+}
+
+.evg-group-filter {
+    padding: 6px 30px 6px 10px;
+    border: 1px solid #8c8f94;
+    border-radius: 3px;
+    background: #ffffff;
+    font-size: 14px;
+    min-width: 160px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.evg-group-filter:focus {
+    outline: none;
+    border-color: #007cba;
+    box-shadow: 0 0 0 1px #007cba;
+}
+
+.evg-export {
+    padding: 6px 14px;
+    background: #007cba;
+    border: 1px solid #0071a1;
+    border-radius: 3px;
+    color: #ffffff;
+    font-size: 14px;
+    cursor: pointer;
+    line-height: 1.8;
+    text-shadow: none;
+}
+
+.evg-export:hover {
+    background: #006ba1;
+    border-color: #00608b;
+}
+
+.evg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.evg-table thead {
+    background: #f6f7f7;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.evg-table th {
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    color: #1d2327;
+    text-transform: none;
+    font-size: 13px;
+    border-right: 1px solid #e2e4e7;
+}
+
+.evg-table th.evg-sortable{
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+    padding-right: 24px;
+}
+
+.evg-table th.evg-sortable::after{
+    content: '\2195';
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    opacity: 0.35;
+}
+
+.evg-table th.evg-sortable.is-asc::after{
+    content: '\25B2';
+    opacity: 0.8;
+}
+
+.evg-table th.evg-sortable.is-desc::after{
+    content: '\25BC';
+    opacity: 0.8;
+}
+
+.evg-table th:last-child {
+    border-right: none;
+}
+
+.evg-table td {
+    padding: 12px;
+    border-bottom: 1px solid #e2e4e7;
+    color: #2c3338;
+    vertical-align: middle;
+    font-size: 13px;
+}
+
+.evg-table tbody tr {
+    transition: background-color 0.15s ease;
+}
+
+.evg-table tbody tr:hover {
+    background: #f6f7f7;
+}
+
+.evg-table tbody tr:nth-child(even) {
+    background: #fbfbfc;
+}
+
+.evg-loading {
+    padding: 30px;
+    text-align: center;
+    color: #50575e;
+    font-size: 15px;
+    background: #f6f7f7;
+    border-top: 1px solid #dcdcde;
+}
+
+.evg-loading::before {
+    content: '';
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e2e4e7;
+    border-top: 2px solid #2271b1;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-right: 10px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.evg-error {
+    padding: 16px;
+    background: #f8d7da;
+    border: 1px solid #f1aeb5;
+    border-radius: 4px;
+    color: #8a1f2d;
+    text-align: center;
+    font-weight: 600;
+}
+
+.evg-notice {
+    padding: 16px;
+    background: #eef6fb;
+    border: 1px solid #c3ddeb;
+    border-radius: 4px;
+    color: #1f2d3d;
+    text-align: center;
+    font-weight: 600;
+}
+
+/* Group badges */
+.evg-group-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    background: #2271b1;
+    color: #ffffff;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    margin: 2px 4px 2px 0;
+}
+
+.evg-no-groups {
+    display: inline-block;
+    padding: 2px 8px;
+    background: #f6f7f7;
+    color: #50575e;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    margin: 2px 4px 2px 0;
+    font-style: italic;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .evg-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .evg-search,
+    .evg-group-filter {
+        max-width: none;
+        margin-bottom: 10px;
+    }
+
+    .evg-meta{
+        flex-direction:column;
+        align-items:flex-start;
+        gap:8px;
+    }
+    
+    .evg-table {
+        font-size: 12px;
+    }
+    
+    .evg-table th,
+    .evg-table td {
+        padding: 8px 6px;
+    }
+}
+
+/* Empty state */
+.evg-empty {
+    padding: 30px;
+    text-align: center;
+    color: #50575e;
+    background: #f6f7f7;
+}
