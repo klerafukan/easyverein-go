@@ -155,6 +155,7 @@ class EVG_Plugin {
         new EVG_Sync();
         new EVG_Frontend();
         add_action('init',[$this,'maybe_schedule_cron']);
+        add_action('rest_api_init',[$this,'register_rest_endpoints']);
     }
 
     private function next_cron_timestamp(){
@@ -228,6 +229,219 @@ class EVG_Plugin {
             }
             $max_iterations--;
         }
+    }
+
+    public function register_rest_endpoints(){
+        register_rest_route(
+            'easyverein-go/v1',
+            '/members',
+            [
+                'methods'             => \WP_REST_Server::READABLE,
+                'callback'            => [$this,'rest_get_members'],
+                'permission_callback' => function(){
+                    return is_user_logged_in();
+                },
+                'args' => [
+                    'per_page' => [
+                        'description'       => 'Anzahl der zurückgegebenen Mitglieder pro Seite.',
+                        'type'              => 'integer',
+                        'default'           => 500,
+                        'sanitize_callback' => 'absint',
+                    ],
+                    'offset' => [
+                        'description'       => 'Offset für Pagination.',
+                        'type'              => 'integer',
+                        'default'           => 0,
+                        'sanitize_callback' => 'absint',
+                    ],
+                    'modified_after' => [
+                        'description'       => 'Nur Mitglieder, deren Datensatz nach diesem ISO-8601 Zeitstempel aktualisiert wurde.',
+                        'type'              => 'string',
+                    ],
+                ],
+            ]
+        );
+    }
+
+    public function rest_get_members( WP_REST_Request $request ){
+        if (!is_user_logged_in()){
+            return new WP_Error('evg_rest_auth', __('Authentication required','ev-groups'), ['status'=>401]);
+        }
+        $user_id   = get_current_user_id();
+        $allow_all = (int) get_user_meta($user_id, 'evg_groups_all', true);
+        $allowed   = $allow_all ? [] : (array) get_user_meta($user_id, 'evg_groups', true);
+        $allowed   = array_values(array_filter(array_map('strval', $allowed)));
+
+        $per_page = (int) $request->get_param('per_page');
+        if ($per_page <= 0) { $per_page = 500; }
+        if ($per_page > 1000) { $per_page = 1000; }
+        $offset = (int) $request->get_param('offset');
+        if ($offset < 0) { $offset = 0; }
+
+        $modified_after = null;
+        if ($request->get_param('modified_after')) {
+            $timestamp = strtotime($request->get_param('modified_after'));
+            if ($timestamp === false){
+                return new WP_Error('evg_rest_invalid_modified_after', __('Invalid modified_after parameter','ev-groups'), ['status'=>400]);
+            }
+            $modified_after = gmdate('Y-m-d H:i:s', $timestamp);
+        }
+
+        if (!$allow_all && empty($allowed)){
+            $response = [
+                'data_version' => gmdate('c'),
+                'total'        => 0,
+                'count'        => 0,
+                'members'      => [],
+                'groups'       => [],
+            ];
+            return new WP_REST_Response($response, 200);
+        }
+
+        global $wpdb;
+        $m_table = $wpdb->prefix.'evg_members';
+        $x_table = $wpdb->prefix.'evg_member_groups';
+        $g_table = $wpdb->prefix.'evg_groups';
+
+        $joins = " LEFT JOIN {$x_table} x ON x.member_id = m.member_id
+                   LEFT JOIN {$g_table} g ON g.group_id = x.group_id";
+        $where = [];
+        $params = [];
+
+        if ($modified_after){
+            $where[] = "m.updated_at >= %s";
+            $params[] = $modified_after;
+        }
+        if (!$allow_all && !empty($allowed)){
+            $placeholders = implode(',', array_fill(0, count($allowed), '%s'));
+            $where[] = "x.group_id IN ($placeholders)";
+            $params = array_merge($params, $allowed);
+        }
+        $where_sql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        $count_sql = "
+            SELECT COUNT(DISTINCT m.member_id)
+            FROM {$m_table} m
+            {$joins}
+            {$where_sql}
+        ";
+        $count_query = $params ? $wpdb->prepare($count_sql, $params) : $count_sql;
+        $total = (int) $wpdb->get_var($count_query);
+
+        $data_sql = "
+            SELECT m.*,
+                   GROUP_CONCAT(DISTINCT x.group_id ORDER BY x.group_id SEPARATOR '||') AS group_ids,
+                   GROUP_CONCAT(DISTINCT COALESCE(NULLIF(g.name,''), x.group_id) ORDER BY x.group_id SEPARATOR '||') AS group_names
+            FROM {$m_table} m
+            {$joins}
+            {$where_sql}
+            GROUP BY m.member_id
+            ORDER BY m.family_name, m.first_name, m.member_number
+            LIMIT %d OFFSET %d
+        ";
+        $data_params = array_merge($params, [$per_page, $offset]);
+        $data_query = $wpdb->prepare($data_sql, $data_params);
+        $rows = $wpdb->get_results($data_query, ARRAY_A);
+
+        $members = array_map([$this,'rest_format_member_row'], $rows);
+
+        // Groups dictionary for filter UI
+        if ($allow_all) {
+            $groups_raw = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM {$g_table} ORDER BY label ASC", ARRAY_A);
+        } else {
+            $placeholders = implode(',', array_fill(0, count($allowed), '%s'));
+            $groups_raw = $wpdb->get_results(
+                $wpdb->prepare("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM {$g_table} WHERE group_id IN ({$placeholders}) ORDER BY label ASC", $allowed),
+                ARRAY_A
+            );
+        }
+        $groups = [];
+        foreach ((array) $groups_raw as $g_row){
+            $groups[] = [
+                'id'    => (string) $g_row['group_id'],
+                'label' => (string) $g_row['label'],
+            ];
+        }
+
+        $response = [
+            'data_version' => gmdate('c'),
+            'total'        => $total,
+            'count'        => count($members),
+            'members'      => $members,
+            'groups'       => $groups,
+        ];
+        return new WP_REST_Response($response, 200);
+    }
+
+    private function rest_format_member_row(array $row){
+        $group_ids = [];
+        $group_names = [];
+        if (!empty($row['group_ids'])){
+            $group_ids = array_filter(array_map('trim', explode('||', (string) $row['group_ids'])));
+        }
+        if (!empty($row['group_names'])){
+            $group_names = array_filter(array_map('trim', explode('||', (string) $row['group_names'])));
+        }
+        $groups = [];
+        $max = max(count($group_ids), count($group_names));
+        for ($i=0; $i < $max; $i++){
+            $gid = isset($group_ids[$i]) ? $group_ids[$i] : (isset($group_names[$i]) ? $group_names[$i] : null);
+            if (!$gid) { continue; }
+            $glabel = isset($group_names[$i]) && $group_names[$i] !== '' ? $group_names[$i] : $gid;
+            $groups[] = [
+                'id'    => (string) $gid,
+                'label' => (string) $glabel,
+            ];
+        }
+
+        $phones = [];
+        if (!empty($row['phone'])){
+            $parts = preg_split('/[,;]+/', (string) $row['phone']);
+            $phones = array_values(array_filter(array_map('trim', (array) $parts)));
+        }
+
+        $birth_year = null;
+        if (isset($row['birth_year']) && $row['birth_year'] !== ''){
+            $birth_year = (int) $row['birth_year'];
+        }
+
+        $age = null;
+        if (isset($row['age']) && $row['age'] !== ''){
+            $age = (int) $row['age'];
+        }
+
+        $updated_at = null;
+        if (!empty($row['updated_at'])){
+            $timestamp = strtotime($row['updated_at'].' UTC');
+            if ($timestamp !== false){
+                $updated_at = gmdate('c', $timestamp);
+            }
+        }
+
+        $salutation = '';
+        if (!empty($row['gender'])){
+            $salutation = trim((string) $row['gender']);
+        }
+
+        return [
+            'member_id'     => (string) $row['member_id'],
+            'member_number' => isset($row['member_number']) ? (string) $row['member_number'] : '',
+            'full_name'     => trim(((string) ($row['first_name'] ?? '')).' '.((string) ($row['family_name'] ?? ''))),
+            'first_name'    => isset($row['first_name']) ? (string) $row['first_name'] : '',
+            'family_name'   => isset($row['family_name']) ? (string) $row['family_name'] : '',
+            'date_of_birth' => isset($row['date_of_birth']) ? (string) $row['date_of_birth'] : '',
+            'birth_year'    => $birth_year,
+            'age'           => $age,
+            'salutation'    => $salutation,
+            'email_private' => isset($row['email_private']) ? (string) $row['email_private'] : '',
+            'phones'        => $phones,
+            'zip'           => isset($row['zip']) ? (string) $row['zip'] : '',
+            'city'          => isset($row['city']) ? (string) $row['city'] : '',
+            'street'        => isset($row['street']) ? (string) $row['street'] : '',
+            'address_suffix'=> isset($row['address_suffix']) ? (string) $row['address_suffix'] : '',
+            'groups'        => $groups,
+            'updated_at'    => $updated_at,
+        ];
     }
 }
 new EVG_Plugin();
