@@ -106,6 +106,12 @@
     border-color: #00608b;
 }
 
+.evg-table-container{
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    border-top:1px solid #dcdcde;
+}
+
 .evg-table {
     width: 100%;
     border-collapse: collapse;
@@ -265,6 +271,19 @@
         flex-direction:column;
         align-items:flex-start;
         gap:8px;
+    }
+
+    .evg-table{
+        min-width: 680px;
+    }
+
+    .evg-table th:first-child,
+    .evg-table td:first-child{
+        position:sticky;
+        left:0;
+        background:#fff;
+        z-index:2;
+        box-shadow: 2px 0 0 rgba(0,0,0,0.05);
     }
     
     .evg-table {

@@ -76,16 +76,18 @@ class EVG_Frontend {
                     <button type="button" class="button button-secondary evg-page-next" disabled>&rsaquo;</button>
                 </div>
             </div>
-            <table class="wp-list-table widefat striped table-view-list evg-table">
-                <thead>
-                    <tr>
-                        <?php foreach ($cols as $col): ?>
-                            <th><?php echo esc_html( $this->column_label($col) ); ?></th>
-                        <?php endforeach; ?>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
+            <div class="evg-table-container">
+                <table class="wp-list-table widefat striped table-view-list evg-table">
+                    <thead>
+                        <tr>
+                            <?php foreach ($cols as $col): ?>
+                                <th><?php echo esc_html( $this->column_label($col) ); ?></th>
+                            <?php endforeach; ?>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
             <div class="evg-loading" style="display:none;"><?php echo esc_html__('Laden…','ev-groups'); ?></div>
             <div class="evg-error" style="display:none;"></div>
         </div>
