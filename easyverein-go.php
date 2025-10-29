@@ -2,13 +2,13 @@
 /**
  * Plugin Name: Easyverein Go
  * Description: Mitglieder-Sync + lokales Frontend. Speichert und nutzt den contact-details Link pro Mitglied. Benutzerbezogene Gruppenfreigabe.
- * Version: 2.1.1
+ * Version: 2.1.2
  * Author: Tilmann Laux
  * Text Domain: ev-groups
  */
 if (!defined('ABSPATH')) { exit; }
 
-define('EVG_VERSION','2.1.1');
+define('EVG_VERSION','2.1.2');
 define('EVG_SLUG','easyverein-go');
 define('EVG_PATH', plugin_dir_path(__FILE__));
 define('EVG_URL', plugin_dir_url(__FILE__));
@@ -158,6 +158,81 @@ class EVG_Plugin {
         add_action('rest_api_init',[$this,'register_rest_endpoints']);
     }
 
+    private function collect_sync_db_counts(){
+        global $wpdb;
+        $defaults=[
+            'groups'=>0,
+            'members'=>0,
+            'members_with_contact'=>0,
+            'member_groups'=>0,
+        ];
+        if(!isset($wpdb) || !is_object($wpdb)){
+            return $defaults;
+        }
+        $g_table=$wpdb->prefix.'evg_groups';
+        $m_table=$wpdb->prefix.'evg_members';
+        $x_table=$wpdb->prefix.'evg_member_groups';
+        $defaults['groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$g_table}");
+        $defaults['members']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table}");
+        $defaults['members_with_contact']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table} WHERE contact_details IS NOT NULL AND contact_details <> ''");
+        $defaults['member_groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$x_table}");
+        return $defaults;
+    }
+
+    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message=''){
+        $admin_email=get_option('admin_email');
+        if(!$admin_email || !is_email($admin_email)){
+            return;
+        }
+        $site_name=wp_specialchars_decode(get_bloginfo('name'),ENT_QUOTES);
+        if(empty($site_name)){
+            $site_name='WordPress';
+        }
+        $subject=sprintf('[%s] Easyverein Sync %s',$site_name,$success?'erfolgreich':'fehlgeschlagen');
+        $timestamp=current_time('timestamp');
+        $formatted_time=date_i18n('d.m.Y H:i',$timestamp);
+
+        $lines=[];
+        $lines[]=$success
+            ? 'Der naechtliche Easyverein Sync wurde erfolgreich abgeschlossen.'
+            : 'Der naechtliche Easyverein Sync wurde NICHT erfolgreich abgeschlossen.';
+        if(!$success && !empty($error_message)){
+            $lines[]='';
+            $lines[]='Fehlerhinweis: '.$error_message;
+        }
+        $lines[]='';
+        $lines[]='Zeitpunkt: '.$formatted_time;
+        $lines[]='';
+        $lines[]='Lokale Datenbankstaende:';
+        $lines[]='- Gruppen: '.(int)$db_counts['groups'];
+        $lines[]='- Mitglieder gesamt: '.(int)$db_counts['members'];
+        $lines[]='- Mitglieder mit Kontakt-Details: '.(int)$db_counts['members_with_contact'];
+        $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
+
+        $state_sum=0;
+        foreach(['groups','members_list','details','member_groups'] as $sk){
+            $state_sum+=isset($state_counts[$sk]) ? (int)$state_counts[$sk] : 0;
+        }
+        if($state_sum>0){
+            $lines[]='';
+            $lines[]='API-Zaehler (Rohdaten):';
+            $lines[]='- Gruppen abgeholt: '.(int)$state_counts['groups'];
+            $lines[]='- Mitglieder gelistet: '.(int)$state_counts['members_list'];
+            $lines[]='- Kontakt-Details geladen: '.(int)$state_counts['details'];
+            $lines[]='- Zuordnungen importiert: '.(int)$state_counts['member_groups'];
+        }
+        if(!empty($state_counts['skip_groups'])){
+            $lines[]='';
+            $lines[]='Hinweis: Gruppen-Import war fuer diese Ausfuehrung deaktiviert.';
+        }
+        if(!$success){
+            $lines[]='';
+            $lines[]='Bitte pruefe das Easyverein Log oder aktiviere den Debug-Modus in den Plugin-Einstellungen.';
+        }
+
+        wp_mail($admin_email,$subject,implode("\n",$lines));
+    }
+
     private function next_cron_timestamp(){
         if(function_exists('wp_timezone')){
             $tz=wp_timezone();
@@ -216,19 +291,40 @@ class EVG_Plugin {
         $sync=new EVG_Sync();
         $sync->job_start(0);
         $max_iterations=300;
+        $sync_success=false;
+        $error_message='';
         while($max_iterations>0){
             $result=$sync->job_tick();
             if(empty($result['ok'])){
+                $error_message=isset($result['summary']) ? (string)$result['summary'] : 'Unbekannter Fehler';
                 if(get_option('evg_debug',0)){
-                    error_log('EVG nightly sync failed: '.(isset($result['summary'])?$result['summary']:'unknown error'));
+                    error_log('EVG nightly sync failed: '.$error_message);
                 }
                 break;
             }
             if(!empty($result['done'])){
+                $sync_success=true;
                 break;
             }
             $max_iterations--;
         }
+        if($max_iterations<=0 && !$sync_success && $error_message===''){
+            $error_message='Abbruch nach maximalen Iterationen';
+            if(get_option('evg_debug',0)){
+                error_log('EVG nightly sync aborted: '.$error_message);
+            }
+        }
+
+        $state_final=get_option('evg_sync_job',[]);
+        $state_counts=[
+            'groups'=>isset($state_final['counts']['groups']) ? (int)$state_final['counts']['groups'] : 0,
+            'members_list'=>isset($state_final['counts']['members_list']) ? (int)$state_final['counts']['members_list'] : 0,
+            'details'=>isset($state_final['counts']['details']) ? (int)$state_final['counts']['details'] : 0,
+            'member_groups'=>isset($state_final['counts']['member_groups']) ? (int)$state_final['counts']['member_groups'] : 0,
+            'skip_groups'=>!empty($state_final['skip_groups'])
+        ];
+        $db_counts=$this->collect_sync_db_counts();
+        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message);
     }
 
     public function register_rest_endpoints(){

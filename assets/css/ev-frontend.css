@@ -1,7 +1,11 @@
 /* EasyVerein table styles aligned with WordPress look & feel */
 .evg-wrap {
+    --evg-accent: var(--wp-admin-theme-color, #2271b1);
+    --evg-accent-strong: var(--wp-admin-theme-color-darker-10, #1b5c91);
+    --evg-accent-soft: rgba(34, 113, 177, 0.08);
+    --evg-border: #dcdcde;
     background: #ffffff;
-    border: 1px solid #dcdcde;
+    border: 1px solid var(--evg-border);
     border-radius: 4px;
     box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
     overflow: hidden;
@@ -14,7 +18,7 @@
     align-items: center;
     padding: 12px 16px;
     background: #f6f7f7;
-    border-bottom: 1px solid #dcdcde;
+    border-bottom: 1px solid var(--evg-border);
     color: #1d2327;
     flex-wrap: wrap;
 }
@@ -42,7 +46,7 @@
     align-items:center;
     gap:12px;
     padding:12px 16px;
-    border-bottom:1px solid #dcdcde;
+    border-bottom:1px solid var(--evg-border);
     background:#ffffff;
     font-size:13px;
     color:#2c3338;
@@ -91,25 +95,28 @@
 
 .evg-export {
     padding: 6px 14px;
-    background: #007cba;
-    border: 1px solid #0071a1;
+    background: var(--evg-accent);
+    border: 1px solid var(--evg-accent-strong);
     border-radius: 3px;
     color: #ffffff;
     font-size: 14px;
     cursor: pointer;
     line-height: 1.8;
     text-shadow: none;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .evg-export:hover {
-    background: #006ba1;
-    border-color: #00608b;
+    background: var(--evg-accent);
+    border-color: var(--evg-accent-strong);
+    box-shadow: 0 2px 6px rgba(34, 113, 177, 0.25);
 }
 
 .evg-table-container{
     overflow-x:auto;
     -webkit-overflow-scrolling:touch;
-    border-top:1px solid #dcdcde;
+    border-top:1px solid var(--evg-border);
 }
 
 .evg-table {
@@ -120,7 +127,7 @@
 
 .evg-table thead {
     background: #f6f7f7;
-    border-bottom: 1px solid #dcdcde;
+    border-bottom: 1px solid var(--evg-border);
 }
 
 .evg-table th {
@@ -177,7 +184,7 @@
 }
 
 .evg-table tbody tr:hover {
-    background: #f6f7f7;
+    background: rgba(34, 113, 177, 0.08);
 }
 
 .evg-table tbody tr:nth-child(even) {
@@ -234,12 +241,13 @@
 .evg-group-badge {
     display: inline-block;
     padding: 2px 8px;
-    background: #2271b1;
+    background: var(--evg-accent);
     color: #ffffff;
     border-radius: 12px;
     font-size: 11px;
     font-weight: 600;
     margin: 2px 4px 2px 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
 .evg-no-groups {
@@ -278,6 +286,15 @@
         border-collapse: separate;
     }
 
+    .evg-table tbody {
+        display: block;
+        margin: 0;
+    }
+
+    .evg-table tbody tr + tr {
+        margin-top: 10px;
+    }
+
     .evg-table thead {
         border: 0;
         clip: rect(0 0 0 0);
@@ -289,42 +306,64 @@
         width: 1px;
     }
 
-    .evg-table tbody {
-        display: block;
-    }
-
     .evg-table tr {
         display: block;
-        background: #ffffff;
-        border: 1px solid #dcdcde;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
-        margin-bottom: 12px;
-        padding: 12px 16px;
+        background: linear-gradient(180deg, rgba(34, 113, 177, 0.08) 0%, #ffffff 48%);
+        border: 1px solid rgba(34, 113, 177, 0.18);
+        border-left: 4px solid var(--evg-accent);
+        border-radius: 10px;
+        box-shadow: 0 6px 16px rgba(34, 113, 177, 0.12);
+        padding: 12px 14px;
+        position: relative;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
     }
 
     .evg-table tbody tr:nth-child(even),
     .evg-table tbody tr:hover {
-        background: #ffffff;
+        background: linear-gradient(180deg, rgba(34, 113, 177, 0.12) 0%, #ffffff 55%);
+        border-color: rgba(34, 113, 177, 0.28);
+        box-shadow: 0 10px 24px rgba(34, 113, 177, 0.18);
+        transform: translateY(-2px);
     }
 
     .evg-table td {
         display: flex;
         align-items: flex-start;
-        gap: 16px;
-        padding: 8px 0;
+        gap: 12px;
+        padding: 6px 0;
         border: 0;
+        font-size: 13px;
+        color: #1d2327;
+    }
+
+    .evg-table td + td {
+        border-top: 1px solid rgba(34, 113, 177, 0.1);
+        padding-top: 8px;
+        margin-top: 4px;
     }
 
     .evg-table td::before {
         content: attr(data-label);
-        flex: 0 0 120px;
+        flex: 0 0 110px;
         font-weight: 600;
-        color: #1d2327;
+        color: var(--evg-accent-strong);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+        font-size: 11px;
     }
 
     .evg-table td:last-child {
         padding-bottom: 0;
+    }
+}
+
+@media (max-width: 480px) {
+    .evg-table td::before {
+        flex-basis: 96px;
+    }
+
+    .evg-toolbar {
+        gap: 10px;
     }
 }
 
