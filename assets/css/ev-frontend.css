@@ -122,7 +122,8 @@
 .evg-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 14px;
+    table-layout: fixed;
+    font-size: 13px;
 }
 
 .evg-table thead {
@@ -131,13 +132,14 @@
 }
 
 .evg-table th {
-    padding: 12px;
+    padding: 8px 10px;
     text-align: left;
     font-weight: 600;
     color: #1d2327;
     text-transform: none;
     font-size: 13px;
     border-right: 1px solid #e2e4e7;
+    white-space: nowrap;
 }
 
 .evg-table th.evg-sortable{
@@ -172,11 +174,13 @@
 }
 
 .evg-table td {
-    padding: 12px;
+    padding: 8px 10px;
     border-bottom: 1px solid #e2e4e7;
     color: #2c3338;
     vertical-align: middle;
-    font-size: 13px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    word-break: break-word;
 }
 
 .evg-table tbody tr {

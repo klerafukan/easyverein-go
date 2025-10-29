@@ -3,7 +3,8 @@ if (!defined('ABSPATH')) { exit; }
 
 class EVG_Frontend {
     private const DEFAULT_COLUMNS = [
-        'full_name',
+        'first_name',
+        'family_name',
         'email_private',
         'date_of_birth',
         'age',
@@ -13,8 +14,6 @@ class EVG_Frontend {
         'zip',
         'city',
         'street',
-        'address_suffix',
-        'member_number',
         'groups'
     ];
 

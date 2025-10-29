@@ -37,7 +37,7 @@ class EVG_Plugin {
             'evg_members_path' => '/api/v2.0/member',
             'evg_contact_details_path' => '/api/v2.0/contact-details/{id}',
             'evg_member_groups_path'   => '/api/v2.0/member/{id}/groups',
-            'evg_columns'      => ['full_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','address_suffix','member_number','groups'],
+            'evg_columns'      => ['first_name','family_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','groups'],
             'evg_debug'        => 1,
             'evg_sync_next_pages_max' => 100,
             'evg_sync_rate_per_sec'   => 5,
