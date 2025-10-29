@@ -119,6 +119,7 @@
     border-top:1px solid var(--evg-border);
 }
 
+/* Compact desktop table layout */
 .evg-table {
     width: 100%;
     border-collapse: collapse;

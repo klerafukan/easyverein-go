@@ -1,5 +1,7 @@
 # Easyverein Go
 
+Aktuelle Plugin-Version: **2.1.3**
+
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
 ## Funktionsumfang
@@ -11,7 +13,8 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
   • Fehlertolerante API-Aufrufe mit Retry/Backoff, konfigurierbaren Limits und Logging (bei aktivem Debug)
 
 - **Frontend-Tabelle für Mitglieder**  
-  Shortcode `[easyverein_table]` zeigt die synchronisierten Mitglieder als sortierbare, paginierte Tabelle (100 Einträge pro Seite) mit Live-Suche, Gruppenfilter und CSV-Export. Spalten sind fest definiert (u. a. Name, Geburtsdatum, Jahrgang, Anrede, Telefonnummer, Adresse, Gruppen) und können optional per Shortcode überschrieben werden.  
+  Shortcode `[easyverein_table]` zeigt die synchronisierten Mitglieder als sortierbare, paginierte Tabelle (100 Einträge pro Seite) mit Live-Suche, Gruppenfilter und CSV-Export. Standardmäßig werden kompakte Spalten (Vorname, Nachname, Kontaktwege, Adresse, Gruppen) angezeigt; zusätzliche Felder können optional per Shortcode zugeschaltet werden.  
+  Das Design orientiert sich an den WordPress-Akzentfarben, reagiert auf kleinere Viewports mit Kartenlayout und passt die Spaltenbreite automatisch an.
   Die Anzeige ist auf eingeloggte WordPress-Benutzer beschränkt und respektiert deren Gruppenfreigabe.
 
 - **Benutzerbezogene Gruppenfreigabe**  
@@ -33,7 +36,7 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
 ### Optional: Shortcode-Spalten anpassen
 
 ```
-[easyverein_table columns="full_name,email_private,phone,groups"]
+[easyverein_table columns="first_name,family_name,email_private,phone,groups"]
 ```
 
 Erlaubte Spaltennamen entsprechen den Keys aus `EVG_Frontend::COLUMN_LABELS`.
@@ -57,4 +60,3 @@ Das Projekt benötigt keine Build-Schritte; PHP-Dateien folgen WordPress-Kompati
 ## Lizenz
 
 MIT-Lizenz (siehe `LICENSE`, falls vorhanden) oder ergänze die passende Lizenzinformation.
-

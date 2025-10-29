@@ -2,6 +2,7 @@
 if (!defined('ABSPATH')) { exit; }
 
 class EVG_Frontend {
+    // Default order keeps the table slim: split names, omit optional address/member id extras.
     private const DEFAULT_COLUMNS = [
         'first_name',
         'family_name',
