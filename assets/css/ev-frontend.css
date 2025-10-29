@@ -255,44 +255,76 @@
 }
 
 /* Responsive design */
-@media (max-width: 768px) {
+@media (max-width: 720px) {
     .evg-toolbar {
         flex-direction: column;
         align-items: stretch;
     }
-    
+
     .evg-search,
     .evg-group-filter {
         max-width: none;
-        margin-bottom: 10px;
+        width: 100%;
     }
 
-    .evg-meta{
-        flex-direction:column;
-        align-items:flex-start;
-        gap:8px;
+    .evg-meta {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
     }
 
-    .evg-table{
-        min-width: 680px;
-    }
-
-    .evg-table th:first-child,
-    .evg-table td:first-child{
-        position:sticky;
-        left:0;
-        background:#fff;
-        z-index:2;
-        box-shadow: 2px 0 0 rgba(0,0,0,0.05);
-    }
-    
     .evg-table {
-        font-size: 12px;
+        font-size: 13px;
+        border-collapse: separate;
     }
-    
-    .evg-table th,
+
+    .evg-table thead {
+        border: 0;
+        clip: rect(0 0 0 0);
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        padding: 0;
+        position: absolute;
+        width: 1px;
+    }
+
+    .evg-table tbody {
+        display: block;
+    }
+
+    .evg-table tr {
+        display: block;
+        background: #ffffff;
+        border: 1px solid #dcdcde;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+        margin-bottom: 12px;
+        padding: 12px 16px;
+    }
+
+    .evg-table tbody tr:nth-child(even),
+    .evg-table tbody tr:hover {
+        background: #ffffff;
+    }
+
     .evg-table td {
-        padding: 8px 6px;
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 8px 0;
+        border: 0;
+    }
+
+    .evg-table td::before {
+        content: attr(data-label);
+        flex: 0 0 120px;
+        font-weight: 600;
+        color: #1d2327;
+    }
+
+    .evg-table td:last-child {
+        padding-bottom: 0;
     }
 }
 

@@ -138,13 +138,22 @@
         }).join('');
         $thead.append('<tr>'+headerCells+'</tr>');
 
+        const labelByColumn = columns.reduce((acc, columnKey) => {
+            acc[columnKey] = headerLabel(columnKey);
+            return acc;
+        }, {});
+
         if (rows.length === 0) {
             $tbody.append('<tr><td colspan="' + columns.length + '" class="evg-empty">Keine Daten gefunden</td></tr>');
             return;
         }
         
         rows.forEach(r=>{
-            $tbody.append('<tr>'+columns.map(c=>'<td>'+formatCellValue(c, r[c])+'</td>').join('')+'</tr>');
+            const cells = columns.map(c=>{
+                const label = labelByColumn[c] || c;
+                return `<td data-label="${escapeHtml(label)}">${formatCellValue(c, r[c])}</td>`;
+            }).join('');
+            $tbody.append('<tr>'+cells+'</tr>');
         });
     }
     
