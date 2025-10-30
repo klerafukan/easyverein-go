@@ -179,7 +179,7 @@ class EVG_Plugin {
         return $defaults;
     }
 
-    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message=''){
+    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array()){
         $admin_email=get_option('admin_email');
         if(!$admin_email || !is_email($admin_email)){
             return;
@@ -228,6 +228,14 @@ class EVG_Plugin {
         if(!$success){
             $lines[]='';
             $lines[]='Bitte pruefe das Easyverein Log oder aktiviere den Debug-Modus in den Plugin-Einstellungen.';
+        }
+        if(!empty($tick_log)){
+            $lines[]='';
+            $lines[]='Hinweis: Ein manueller Vollsync dauert erfahrungsgemaess 30-50 Minuten.';
+            $lines[]='Tick-Log (letzte 10 Eintraege):';
+            foreach(array_slice($tick_log,-10) as $entry){
+                $lines[]='  '.$entry;
+            }
         }
 
         wp_mail($admin_email,$subject,implode("\n",$lines));
@@ -290,11 +298,26 @@ class EVG_Plugin {
         }
         $sync=new EVG_Sync();
         $sync->job_start(0);
-        $max_iterations=300;
+        $max_iterations = (int) apply_filters('evg_nightly_sync_iteration_limit', 3000);
+        $time_budget    = (int) apply_filters('evg_nightly_sync_time_budget', 10 * MINUTE_IN_SECONDS);
+        if ($max_iterations < 100) { $max_iterations = 100; }
+        if ($time_budget < 60) { $time_budget = 60; }
+        $deadline = microtime(true) + $time_budget;
         $sync_success=false;
         $error_message='';
-        while($max_iterations>0){
+        $iteration=0;
+        $tick_log = [];
+        while(true){
             $result=$sync->job_tick();
+            $iteration++;
+            if(isset($result['percent'])){
+                $tick_log[] = sprintf(
+                    '#%d %.1f%% – %s',
+                    $iteration,
+                    floatval($result['percent']),
+                    isset($result['label']) ? (string)$result['label'] : ''
+                );
+            }
             if(empty($result['ok'])){
                 $error_message=isset($result['summary']) ? (string)$result['summary'] : 'Unbekannter Fehler';
                 if(get_option('evg_debug',0)){
@@ -307,11 +330,19 @@ class EVG_Plugin {
                 break;
             }
             $max_iterations--;
-        }
-        if($max_iterations<=0 && !$sync_success && $error_message===''){
-            $error_message='Abbruch nach maximalen Iterationen';
-            if(get_option('evg_debug',0)){
-                error_log('EVG nightly sync aborted: '.$error_message);
+            if($max_iterations<=0){
+                $error_message='Abbruch nach Iterationslimit';
+                if(get_option('evg_debug',0)){
+                    error_log('EVG nightly sync aborted: '.$error_message);
+                }
+                break;
+            }
+            if(microtime(true) >= $deadline){
+                $error_message='Abbruch nach Zeitlimit';
+                if(get_option('evg_debug',0)){
+                    error_log('EVG nightly sync aborted: '.$error_message);
+                }
+                break;
             }
         }
 
@@ -324,7 +355,7 @@ class EVG_Plugin {
             'skip_groups'=>!empty($state_final['skip_groups'])
         ];
         $db_counts=$this->collect_sync_db_counts();
-        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message);
+        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message, $tick_log);
     }
 
     public function register_rest_endpoints(){
