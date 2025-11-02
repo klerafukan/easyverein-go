@@ -2,13 +2,13 @@
 /**
  * Plugin Name: Easyverein Go
  * Description: Mitglieder-Sync + lokales Frontend. Speichert und nutzt den contact-details Link pro Mitglied. Benutzerbezogene Gruppenfreigabe.
- * Version: 2.1.3
+ * Version: 2.1.4
  * Author: Tilmann Laux
  * Text Domain: ev-groups
  */
 if (!defined('ABSPATH')) { exit; }
 
-define('EVG_VERSION','2.1.3');
+define('EVG_VERSION','2.1.4');
 define('EVG_SLUG','easyverein-go');
 define('EVG_PATH', plugin_dir_path(__FILE__));
 define('EVG_URL', plugin_dir_url(__FILE__));
@@ -20,6 +20,7 @@ require_once EVG_PATH.'includes/class-evg-frontend.php';
 
 class EVG_Plugin {
     private const CRON_HOOK = 'evg_nightly_sync';
+    private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
     public function __construct(){
         register_activation_hook(__FILE__,[$this,'on_activate']);
@@ -44,23 +45,31 @@ class EVG_Plugin {
             'evg_sync_calls_per_tick' => 5,
             'evg_tick_pause_ms'       => 900,
             'evg_sync_skip_groups'    => 0,
-            'evg_nightly_sync_enabled'=> 0
+            'evg_nightly_sync_enabled'=> 0,
+            'evg_nightly_sync_table_prefix'=> self::NIGHTLY_TABLE_PREFIX
         ];
         foreach($defaults as $k=>$v){ if (null===get_option($k,null)) update_option($k,$v); }
-        $this->create_tables();
-        $this->maybe_migrate_add_contact_details();
-        $this->maybe_migrate_add_speaking_columns();
-        $this->maybe_migrate_add_extended_member_fields();
+        $this->ensure_tables_for_prefix('evg');
+        if(self::NIGHTLY_TABLE_PREFIX!=='evg'){
+            $this->ensure_tables_for_prefix(self::NIGHTLY_TABLE_PREFIX);
+        }
     }
     public function on_deactivate(){
         $this->clear_cron();
     }
+    private function table_name_for_prefix($prefix,$suffix){
+        global $wpdb;
+        return $wpdb->prefix.EVG_Sync::sanitize_table_prefix($prefix).'_'.$suffix;
+    }
     private function create_tables(){
+        $this->create_tables_for_prefix('evg');
+    }
+    private function create_tables_for_prefix($prefix){
         global $wpdb; require_once ABSPATH.'wp-admin/includes/upgrade.php';
         $c = $wpdb->get_charset_collate();
-        $g = $wpdb->prefix.'evg_groups';
-        $m = $wpdb->prefix.'evg_members';
-        $x = $wpdb->prefix.'evg_member_groups';
+        $g = $this->table_name_for_prefix($prefix,'groups');
+        $m = $this->table_name_for_prefix($prefix,'members');
+        $x = $this->table_name_for_prefix($prefix,'member_groups');
         $wpdb->query("CREATE TABLE IF NOT EXISTS $g (
             group_id varchar(191) PRIMARY KEY,
             name varchar(255) DEFAULT '',
@@ -98,13 +107,13 @@ class EVG_Plugin {
             KEY idx_group (group_id)
         ) $c;");
     }
-    private function maybe_migrate_add_contact_details(){
-        global $wpdb; $table=$wpdb->prefix.'evg_members';
+    private function maybe_migrate_add_contact_details($prefix='evg'){
+        global $wpdb; $table=$this->table_name_for_prefix($prefix,'members');
         $col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='contact_details'", DB_NAME, $table ));
         if (!$col) { $wpdb->query("ALTER TABLE {$table} ADD COLUMN contact_details varchar(255) DEFAULT '' AFTER member_number"); }
     }
-    private function maybe_migrate_add_speaking_columns(){
-        global $wpdb; $table=$wpdb->prefix.'evg_member_groups';
+    private function maybe_migrate_add_speaking_columns($prefix='evg'){
+        global $wpdb; $table=$this->table_name_for_prefix($prefix,'member_groups');
         $member_name_col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='member_name'", DB_NAME, $table ));
         $group_name_col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='group_name'", DB_NAME, $table ));
         
@@ -131,9 +140,9 @@ class EVG_Plugin {
             $wpdb->query("ALTER TABLE {$table} ADD INDEX idx_group_name (group_name)");
         }
     }
-    private function maybe_migrate_add_extended_member_fields(){
+    private function maybe_migrate_add_extended_member_fields($prefix='evg'){
         global $wpdb;
-        $table = $wpdb->prefix.'evg_members';
+        $table = $this->table_name_for_prefix($prefix,'members');
         $columns = $wpdb->get_col($wpdb->prepare(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s",
             DB_NAME, $table
@@ -149,8 +158,14 @@ class EVG_Plugin {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN phone varchar(120) DEFAULT '' AFTER email_private");
         }
     }
+    private function ensure_tables_for_prefix($prefix){
+        $this->create_tables_for_prefix($prefix);
+        $this->maybe_migrate_add_contact_details($prefix);
+        $this->maybe_migrate_add_speaking_columns($prefix);
+        $this->maybe_migrate_add_extended_member_fields($prefix);
+    }
     public function init(){
-        $this->maybe_migrate_add_extended_member_fields();
+        $this->ensure_tables_for_prefix('evg');
         new EVG_Admin();
         new EVG_Sync();
         new EVG_Frontend();
@@ -158,7 +173,7 @@ class EVG_Plugin {
         add_action('rest_api_init',[$this,'register_rest_endpoints']);
     }
 
-    private function collect_sync_db_counts(){
+    private function collect_sync_db_counts($prefix='evg'){
         global $wpdb;
         $defaults=[
             'groups'=>0,
@@ -169,9 +184,10 @@ class EVG_Plugin {
         if(!isset($wpdb) || !is_object($wpdb)){
             return $defaults;
         }
-        $g_table=$wpdb->prefix.'evg_groups';
-        $m_table=$wpdb->prefix.'evg_members';
-        $x_table=$wpdb->prefix.'evg_member_groups';
+        $prefix=EVG_Sync::sanitize_table_prefix($prefix);
+        $g_table=$this->table_name_for_prefix($prefix,'groups');
+        $m_table=$this->table_name_for_prefix($prefix,'members');
+        $x_table=$this->table_name_for_prefix($prefix,'member_groups');
         $defaults['groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$g_table}");
         $defaults['members']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table}");
         $defaults['members_with_contact']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table} WHERE contact_details IS NOT NULL AND contact_details <> ''");
@@ -179,7 +195,7 @@ class EVG_Plugin {
         return $defaults;
     }
 
-    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array()){
+    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array(),$table_prefix='evg'){
         $admin_email=get_option('admin_email');
         if(!$admin_email || !is_email($admin_email)){
             return;
@@ -208,6 +224,10 @@ class EVG_Plugin {
         $lines[]='- Mitglieder gesamt: '.(int)$db_counts['members'];
         $lines[]='- Mitglieder mit Kontakt-Details: '.(int)$db_counts['members_with_contact'];
         $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
+        if(EVG_Sync::sanitize_table_prefix($table_prefix)!=='evg'){
+            $lines[]='';
+            $lines[]='Hinweis: Dieser Lauf schrieb in Tabellen mit Präfix „'.EVG_Sync::sanitize_table_prefix($table_prefix).'“.';
+        }
 
         $state_sum=0;
         foreach(['groups','members_list','details','member_groups'] as $sk){
@@ -291,12 +311,16 @@ class EVG_Plugin {
         if(function_exists('wp_doing_cron') && !wp_doing_cron()){
             return;
         }
-        $state=get_option('evg_sync_job',[]);
+        $raw_prefix=get_option('evg_nightly_sync_table_prefix',self::NIGHTLY_TABLE_PREFIX);
+        $raw_prefix=apply_filters('evg_nightly_sync_table_prefix',$raw_prefix);
+        $nightly_prefix=EVG_Sync::sanitize_table_prefix($raw_prefix);
+        $this->ensure_tables_for_prefix($nightly_prefix);
+        $sync=new EVG_Sync($nightly_prefix);
+        $state=get_option($sync->get_state_option_key(),[]);
         if(is_array($state) && !empty($state) && empty($state['done'])){
             // another sync is running, skip
             return;
         }
-        $sync=new EVG_Sync();
         $sync->job_start(0);
         $max_iterations = (int) apply_filters('evg_nightly_sync_iteration_limit', 3000);
         $time_budget    = (int) apply_filters('evg_nightly_sync_time_budget', 10 * MINUTE_IN_SECONDS);
@@ -321,7 +345,7 @@ class EVG_Plugin {
             if(empty($result['ok'])){
                 $error_message=isset($result['summary']) ? (string)$result['summary'] : 'Unbekannter Fehler';
                 if(get_option('evg_debug',0)){
-                    error_log('EVG nightly sync failed: '.$error_message);
+                    error_log(sprintf('EVG nightly sync (%s) failed: %s',$nightly_prefix,$error_message));
                 }
                 break;
             }
@@ -333,20 +357,20 @@ class EVG_Plugin {
             if($max_iterations<=0){
                 $error_message='Abbruch nach Iterationslimit';
                 if(get_option('evg_debug',0)){
-                    error_log('EVG nightly sync aborted: '.$error_message);
+                    error_log(sprintf('EVG nightly sync (%s) aborted: %s',$nightly_prefix,$error_message));
                 }
                 break;
             }
             if(microtime(true) >= $deadline){
                 $error_message='Abbruch nach Zeitlimit';
                 if(get_option('evg_debug',0)){
-                    error_log('EVG nightly sync aborted: '.$error_message);
+                    error_log(sprintf('EVG nightly sync (%s) aborted: %s',$nightly_prefix,$error_message));
                 }
                 break;
             }
         }
 
-        $state_final=get_option('evg_sync_job',[]);
+        $state_final=get_option($sync->get_state_option_key(),[]);
         $state_counts=[
             'groups'=>isset($state_final['counts']['groups']) ? (int)$state_final['counts']['groups'] : 0,
             'members_list'=>isset($state_final['counts']['members_list']) ? (int)$state_final['counts']['members_list'] : 0,
@@ -354,8 +378,8 @@ class EVG_Plugin {
             'member_groups'=>isset($state_final['counts']['member_groups']) ? (int)$state_final['counts']['member_groups'] : 0,
             'skip_groups'=>!empty($state_final['skip_groups'])
         ];
-        $db_counts=$this->collect_sync_db_counts();
-        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message, $tick_log);
+        $db_counts=$this->collect_sync_db_counts($nightly_prefix);
+        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message,$tick_log,$nightly_prefix);
     }
 
     public function register_rest_endpoints(){

@@ -3,6 +3,31 @@ if (!defined('ABSPATH')) { exit; }
 
 class EVG_Sync {
     private $state_key='evg_sync_job';
+    private $table_prefix='evg';
+
+    public static function sanitize_table_prefix($prefix){
+        return evg_sanitize_table_prefix($prefix);
+    }
+
+    public function __construct($table_prefix='evg'){
+        $this->table_prefix=self::sanitize_table_prefix($table_prefix);
+        $this->state_key=($this->table_prefix==='evg')
+            ? 'evg_sync_job'
+            : sprintf('evg_sync_job_%s',$this->table_prefix);
+    }
+
+    public function get_state_option_key(){
+        return $this->state_key;
+    }
+
+    public function get_table_prefix(){
+        return $this->table_prefix;
+    }
+
+    private function table($suffix){
+        global $wpdb;
+        return $wpdb->prefix.$this->table_prefix.'_'.$suffix;
+    }
 
     private function headers(){
         $key=get_option('evg_api_key',''); $hdr=get_option('evg_auth_header','Authorization Bearer');
@@ -23,9 +48,9 @@ class EVG_Sync {
 
     public function job_start($cap=0){
         global $wpdb;
-        $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}evg_member_groups");
-        $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}evg_members");
-        $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}evg_groups");
+        $wpdb->query('TRUNCATE TABLE '.$this->table('member_groups'));
+        $wpdb->query('TRUNCATE TABLE '.$this->table('members'));
+        $wpdb->query('TRUNCATE TABLE '.$this->table('groups'));
         $skip = (int) get_option('evg_sync_skip_groups', 0 );
         $state=[
             'phase'=>'groups',
@@ -69,9 +94,9 @@ class EVG_Sync {
         if (empty($s)) return ['ok'=>false,'summary'=>'Kein aktiver Job'];
         if (!empty($s['done'])) return ['ok'=>true,'done'=>true,'percent'=>100,'label'=>'Fertig'];
 
-        $m_table=$wpdb->prefix.'evg_members';
-        $g_table=$wpdb->prefix.'evg_groups';
-        $x_table=$wpdb->prefix.'evg_member_groups';
+        $m_table=$this->table('members');
+        $g_table=$this->table('groups');
+        $x_table=$this->table('member_groups');
 
         $calls=0; $max=$this->calls_per_tick();
         while($calls<$max){

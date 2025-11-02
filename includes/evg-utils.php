@@ -10,6 +10,10 @@ function evg__endpoint_key_from_url($url){
     }
     return 'root';
 }
+function evg_sanitize_table_prefix($prefix){
+    $prefix=strtolower(preg_replace('/[^a-z0-9_]/','',(string)$prefix));
+    return $prefix!==''?$prefix:'evg';
+}
 function evg_debug_log_api($context){
     if (!get_option('evg_debug',0)) return;
     $dir = trailingslashit(WP_CONTENT_DIR).'easyverein-debug';

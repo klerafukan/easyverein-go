@@ -19,26 +19,48 @@ echo "<h1>EasyVerein Sync Debug</h1>";
 
 // Check if tables exist
 global $wpdb;
-$tables = [
-    $wpdb->prefix . 'evg_groups',
-    $wpdb->prefix . 'evg_members', 
-    $wpdb->prefix . 'evg_member_groups'
+$nightly_prefix_option = get_option('evg_nightly_sync_table_prefix', 'evg_nightly');
+$nightly_prefix = class_exists('EVG_Sync')
+    ? EVG_Sync::sanitize_table_prefix($nightly_prefix_option)
+    : 'evg_nightly';
+$table_prefixes = [
+    'Primär' => 'evg'
 ];
+if ($nightly_prefix !== 'evg') {
+    $table_prefixes['Nächtlich'] = $nightly_prefix;
+}
 
 echo "<h2>1. Database Tables Check</h2>";
-foreach ($tables as $table) {
-    $exists = $wpdb->get_var("SHOW TABLES LIKE '$table'");
-    $count = $exists ? $wpdb->get_var("SELECT COUNT(*) FROM $table") : 0;
-    echo "<p><strong>$table:</strong> " . ($exists ? "✓ Exists ($count records)" : "✗ Missing") . "</p>";
+foreach ($table_prefixes as $label => $prefix) {
+    echo "<h3>$label ($prefix)</h3>";
+    $tables = [
+        $wpdb->prefix . $prefix . '_groups',
+        $wpdb->prefix . $prefix . '_members',
+        $wpdb->prefix . $prefix . '_member_groups'
+    ];
+    foreach ($tables as $table) {
+        $exists = $wpdb->get_var("SHOW TABLES LIKE '$table'");
+        $count = $exists ? $wpdb->get_var("SELECT COUNT(*) FROM $table") : 0;
+        echo "<p><strong>$table:</strong> " . ($exists ? "✓ Exists ($count records)" : "✗ Missing") . "</p>";
+    }
 }
 
 // Check current sync state
 echo "<h2>2. Current Sync State</h2>";
-$state = get_option('evg_sync_job');
-if ($state) {
-    echo "<pre>" . print_r($state, true) . "</pre>";
+$state_primary = get_option('evg_sync_job');
+if ($state_primary) {
+    echo "<h3>Primär (evg)</h3><pre>" . print_r($state_primary, true) . "</pre>";
 } else {
-    echo "<p>No active sync job</p>";
+    echo "<h3>Primär (evg)</h3><p>No active sync job</p>";
+}
+if ($nightly_prefix !== 'evg') {
+    $nightly_state_key = 'evg_sync_job_' . $nightly_prefix;
+    $state_nightly = get_option($nightly_state_key);
+    if ($state_nightly) {
+        echo "<h3>Nächtlich ($nightly_prefix)</h3><pre>" . print_r($state_nightly, true) . "</pre>";
+    } else {
+        echo "<h3>Nächtlich ($nightly_prefix)</h3><p>No active sync job</p>";
+    }
 }
 
 // Check API configuration

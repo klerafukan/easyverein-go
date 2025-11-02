@@ -1,6 +1,6 @@
 # Easyverein Go
 
-Aktuelle Plugin-Version: **2.1.3**
+Aktuelle Plugin-Version: **2.1.4**
 
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
@@ -9,7 +9,7 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
 - **API‑Sync mit EasyVerein**  
   Lädt Mitglieder, Gruppen, Contact-Details und Mitglied‑zu‑Gruppen-Zuordnungen herunter und speichert sie lokal in eigenen Tabellen (`wp_evg_*`).  
   • Manueller Sync über die Admin-Oberfläche („Jetzt synchronisieren“ / „Nur 10 Mitglieder testen“)  
-  • Optionaler nächtlicher Vollsync via WP-Cron (ca. 03:00 Uhr, wenn in den Einstellungen aktiviert)  
+  • Optionaler nächtlicher Vollsync via WP-Cron (ca. 03:00 Uhr, wenn in den Einstellungen aktiviert; schreibt standardmäßig in das Testpräfix `wp_evg_nightly_*`)  
   • Fehlertolerante API-Aufrufe mit Retry/Backoff, konfigurierbaren Limits und Logging (bei aktivem Debug)
 
 - **Frontend-Tabelle für Mitglieder**  
@@ -44,6 +44,7 @@ Erlaubte Spaltennamen entsprechen den Keys aus `EVG_Frontend::COLUMN_LABELS`.
 ## WP-Cron & CLI
 
 - WP-Cron sorgt bei aktivierter Checkbox für den täglichen Sync.  
+- Über **Einstellungen → Easyverein Go → Tabellen-Präfix (nächtlich)** lässt sich festlegen, ob der Cron-Lauf in das Testpräfix (`evg_nightly`) oder direkt in die produktiven Tabellen (`evg`) schreibt.
 - Manueller Cron-Aufruf (z. B. per CLI): `wp cron event run evg_nightly_sync`  
 - Geplante Events prüfen: `wp cron event list | grep evg_nightly_sync`
 

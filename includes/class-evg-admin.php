@@ -17,6 +17,10 @@ class EVG_Admin {
         add_action('admin_enqueue_scripts', [$this,'enqueue_admin_assets']);
     }
 
+    public function sanitize_table_prefix($value){
+        return evg_sanitize_table_prefix($value);
+    }
+
     public function menu(){
         add_menu_page(__('Easyverein Go','ev-groups'),__('Easyverein Go','ev-groups'),'manage_options',EVG_SLUG,[$this,'page'],'dashicons-groups',58);
     }
@@ -36,6 +40,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_tick_pause_ms',['type'=>'integer','sanitize_callback'=>'absint','default'=>900]);
         register_setting('evg_settings','evg_sync_skip_groups',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         register_setting('evg_settings','evg_nightly_sync_enabled',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
+        register_setting('evg_settings','evg_nightly_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg_nightly']);
     }
 
     private function headers(){
@@ -76,6 +81,16 @@ class EVG_Admin {
                                 <?php esc_html_e('Automatischen nächtlichen Vollabgleich (ca. 03:00 Uhr) aktivieren','ev-groups'); ?>
                             </label>
                             <p class="description"><?php esc_html_e('Nutzen Sie diese Option, um einmal täglich (über WP-Cron) einen kompletten Sync aller Mitglieder und Gruppen auszuführen.','ev-groups'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><?php esc_html_e('Tabellen-Präfix (nächtlich)','ev-groups'); ?></th>
+                        <td>
+                            <?php $nightly_prefix = get_option('evg_nightly_sync_table_prefix','evg_nightly'); ?>
+                            <input type="text" name="evg_nightly_sync_table_prefix" class="regular-text" value="<?php echo esc_attr($nightly_prefix); ?>">
+                            <p class="description">
+                                <?php esc_html_e('Standard: evg_nightly – für produktive Tabellen „evg“ eintragen. Eigene Werte werden automatisch bereinigt (a–z, 0–9, Unterstrich).','ev-groups'); ?>
+                            </p>
                         </td>
                     </tr>
                 </table>
