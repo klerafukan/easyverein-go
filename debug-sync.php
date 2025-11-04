@@ -36,7 +36,9 @@ foreach ($table_prefixes as $label => $prefix) {
     $tables = [
         $wpdb->prefix . $prefix . '_groups',
         $wpdb->prefix . $prefix . '_members',
-        $wpdb->prefix . $prefix . '_member_groups'
+        $wpdb->prefix . $prefix . '_member_groups',
+        $wpdb->prefix . $prefix . '_custom_fields',
+        $wpdb->prefix . $prefix . '_member_custom_fields'
     ];
     foreach ($tables as $table) {
         $exists = $wpdb->get_var("SHOW TABLES LIKE '$table'");
@@ -71,6 +73,8 @@ $config = [
     'evg_auth_header' => get_option('evg_auth_header', ''),
     'evg_members_path' => get_option('evg_members_path', ''),
     'evg_contact_details_path' => get_option('evg_contact_details_path', ''),
+    'evg_custom_fields_path' => get_option('evg_custom_fields_path', ''),
+    'evg_member_custom_fields_path' => get_option('evg_member_custom_fields_path', ''),
     'evg_debug' => get_option('evg_debug', 0)
 ];
 

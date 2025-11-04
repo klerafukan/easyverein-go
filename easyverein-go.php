@@ -38,6 +38,8 @@ class EVG_Plugin {
             'evg_members_path' => '/api/v2.0/member',
             'evg_contact_details_path' => '/api/v2.0/contact-details/{id}',
             'evg_member_groups_path'   => '/api/v2.0/member/{id}/groups',
+            'evg_custom_fields_path'   => '/api/v2.0/custom-field?kind=E&limit=100',
+            'evg_member_custom_fields_path' => '/api/v2.0/member/{id}/custom-fields?limit=100',
             'evg_columns'      => ['first_name','family_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','groups'],
             'evg_debug'        => 1,
             'evg_sync_next_pages_max' => 100,
@@ -57,6 +59,17 @@ class EVG_Plugin {
     public function on_deactivate(){
         $this->clear_cron();
     }
+    private function ensure_runtime_option_defaults(){
+        $runtime_defaults = [
+            'evg_custom_fields_path'           => '/api/v2.0/custom-field?kind=E&limit=100',
+            'evg_member_custom_fields_path'   => '/api/v2.0/member/{id}/custom-fields?limit=100',
+        ];
+        foreach($runtime_defaults as $key => $value){
+            if (null === get_option($key, null)){
+                update_option($key, $value);
+            }
+        }
+    }
     private function table_name_for_prefix($prefix,$suffix){
         global $wpdb;
         return $wpdb->prefix.EVG_Sync::sanitize_table_prefix($prefix).'_'.$suffix;
@@ -67,9 +80,11 @@ class EVG_Plugin {
     private function create_tables_for_prefix($prefix){
         global $wpdb; require_once ABSPATH.'wp-admin/includes/upgrade.php';
         $c = $wpdb->get_charset_collate();
-        $g = $this->table_name_for_prefix($prefix,'groups');
-        $m = $this->table_name_for_prefix($prefix,'members');
-        $x = $this->table_name_for_prefix($prefix,'member_groups');
+        $g  = $this->table_name_for_prefix($prefix,'groups');
+        $m  = $this->table_name_for_prefix($prefix,'members');
+        $x  = $this->table_name_for_prefix($prefix,'member_groups');
+        $cf = $this->table_name_for_prefix($prefix,'custom_fields');
+        $mv = $this->table_name_for_prefix($prefix,'member_custom_fields');
         $wpdb->query("CREATE TABLE IF NOT EXISTS $g (
             group_id varchar(191) PRIMARY KEY,
             name varchar(255) DEFAULT '',
@@ -105,6 +120,27 @@ class EVG_Plugin {
             assigned_at datetime NULL,
             PRIMARY KEY (member_id, group_id),
             KEY idx_group (group_id)
+        ) $c;");
+        $wpdb->query("CREATE TABLE IF NOT EXISTS $cf (
+            field_id varchar(191) PRIMARY KEY,
+            name varchar(255) DEFAULT '',
+            settings_type varchar(32) DEFAULT '',
+            kind varchar(32) DEFAULT '',
+            member_show tinyint(1) DEFAULT 0,
+            member_edit tinyint(1) DEFAULT 0,
+            position int DEFAULT 0,
+            collection varchar(64) DEFAULT '',
+            updated_at datetime NULL,
+            raw longtext
+        ) $c;");
+        $wpdb->query("CREATE TABLE IF NOT EXISTS $mv (
+            member_id varchar(191) NOT NULL,
+            field_id varchar(191) NOT NULL,
+            value_text longtext,
+            updated_at datetime NULL,
+            raw longtext,
+            PRIMARY KEY (member_id, field_id),
+            KEY idx_field (field_id)
         ) $c;");
     }
     private function maybe_migrate_add_contact_details($prefix='evg'){
@@ -166,6 +202,7 @@ class EVG_Plugin {
     }
     public function init(){
         $this->ensure_tables_for_prefix('evg');
+        $this->ensure_runtime_option_defaults();
         new EVG_Admin();
         new EVG_Sync();
         new EVG_Frontend();
@@ -180,6 +217,8 @@ class EVG_Plugin {
             'members'=>0,
             'members_with_contact'=>0,
             'member_groups'=>0,
+            'custom_fields'=>0,
+            'member_custom_fields'=>0,
         ];
         if(!isset($wpdb) || !is_object($wpdb)){
             return $defaults;
@@ -188,10 +227,14 @@ class EVG_Plugin {
         $g_table=$this->table_name_for_prefix($prefix,'groups');
         $m_table=$this->table_name_for_prefix($prefix,'members');
         $x_table=$this->table_name_for_prefix($prefix,'member_groups');
+        $cf_table=$this->table_name_for_prefix($prefix,'custom_fields');
+        $mv_table=$this->table_name_for_prefix($prefix,'member_custom_fields');
         $defaults['groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$g_table}");
         $defaults['members']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table}");
         $defaults['members_with_contact']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table} WHERE contact_details IS NOT NULL AND contact_details <> ''");
         $defaults['member_groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$x_table}");
+        $defaults['custom_fields']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$cf_table}");
+        $defaults['member_custom_fields']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$mv_table}");
         return $defaults;
     }
 
@@ -224,22 +267,26 @@ class EVG_Plugin {
         $lines[]='- Mitglieder gesamt: '.(int)$db_counts['members'];
         $lines[]='- Mitglieder mit Kontakt-Details: '.(int)$db_counts['members_with_contact'];
         $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
+        $lines[]='- Custom Fields: '.(int)$db_counts['custom_fields'];
+        $lines[]='- Custom-Field-Werte: '.(int)$db_counts['member_custom_fields'];
         if(EVG_Sync::sanitize_table_prefix($table_prefix)!=='evg'){
             $lines[]='';
             $lines[]='Hinweis: Dieser Lauf schrieb in Tabellen mit Präfix „'.EVG_Sync::sanitize_table_prefix($table_prefix).'“.';
         }
 
         $state_sum=0;
-        foreach(['groups','members_list','details','member_groups'] as $sk){
+        foreach(['groups','custom_fields','members_list','details','member_custom_fields','member_groups'] as $sk){
             $state_sum+=isset($state_counts[$sk]) ? (int)$state_counts[$sk] : 0;
         }
         if($state_sum>0){
             $lines[]='';
             $lines[]='API-Zaehler (Rohdaten):';
             $lines[]='- Gruppen abgeholt: '.(int)$state_counts['groups'];
+            $lines[]='- Custom Fields geladen: '.(int)$state_counts['custom_fields'];
             $lines[]='- Mitglieder gelistet: '.(int)$state_counts['members_list'];
             $lines[]='- Kontakt-Details geladen: '.(int)$state_counts['details'];
-            $lines[]='- Zuordnungen importiert: '.(int)$state_counts['member_groups'];
+            $lines[]='- Custom-Field-Werte importiert: '.(int)$state_counts['member_custom_fields'];
+            $lines[]='- Gruppen-Zuordnungen importiert: '.(int)$state_counts['member_groups'];
         }
         if(!empty($state_counts['skip_groups'])){
             $lines[]='';
@@ -322,8 +369,8 @@ class EVG_Plugin {
             return;
         }
         $sync->job_start(0);
-        $max_iterations = (int) apply_filters('evg_nightly_sync_iteration_limit', 3000);
-        $time_budget    = (int) apply_filters('evg_nightly_sync_time_budget', 10 * MINUTE_IN_SECONDS);
+        $max_iterations = (int) apply_filters('evg_nightly_sync_iteration_limit', 20000);
+        $time_budget    = (int) apply_filters('evg_nightly_sync_time_budget', 60 * MINUTE_IN_SECONDS);
         if ($max_iterations < 100) { $max_iterations = 100; }
         if ($time_budget < 60) { $time_budget = 60; }
         $deadline = microtime(true) + $time_budget;
@@ -373,8 +420,10 @@ class EVG_Plugin {
         $state_final=get_option($sync->get_state_option_key(),[]);
         $state_counts=[
             'groups'=>isset($state_final['counts']['groups']) ? (int)$state_final['counts']['groups'] : 0,
+            'custom_fields'=>isset($state_final['counts']['custom_fields']) ? (int)$state_final['counts']['custom_fields'] : 0,
             'members_list'=>isset($state_final['counts']['members_list']) ? (int)$state_final['counts']['members_list'] : 0,
             'details'=>isset($state_final['counts']['details']) ? (int)$state_final['counts']['details'] : 0,
+            'member_custom_fields'=>isset($state_final['counts']['member_custom_fields']) ? (int)$state_final['counts']['member_custom_fields'] : 0,
             'member_groups'=>isset($state_final['counts']['member_groups']) ? (int)$state_final['counts']['member_groups'] : 0,
             'skip_groups'=>!empty($state_final['skip_groups'])
         ];

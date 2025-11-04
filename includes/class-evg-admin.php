@@ -33,6 +33,8 @@ class EVG_Admin {
         register_setting('evg_settings','evg_members_path');
         register_setting('evg_settings','evg_contact_details_path');
         register_setting('evg_settings','evg_member_groups_path');
+        register_setting('evg_settings','evg_custom_fields_path');
+        register_setting('evg_settings','evg_member_custom_fields_path');
         register_setting('evg_settings','evg_debug',['type'=>'boolean','sanitize_callback'=>'absint','default'=>1]);
         register_setting('evg_settings','evg_sync_next_pages_max',['type'=>'integer','sanitize_callback'=>'absint','default'=>100]);
         register_setting('evg_settings','evg_sync_rate_per_sec',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
@@ -63,6 +65,8 @@ class EVG_Admin {
                     <tr><th>Groups Path</th><td><input type="text" name="evg_groups_path" class="regular-text" placeholder="/api/v2.0/member-group" value="<?php echo esc_attr(get_option('evg_groups_path','/api/v2.0/member-group')); ?>"></td></tr>
                     <tr><th>Members Path</th><td><input type="text" name="evg_members_path" class="regular-text" placeholder="/api/v2.0/member" value="<?php echo esc_attr(get_option('evg_members_path','/api/v2.0/member')); ?>"></td></tr>
                     <tr><th>Contact-Details Path</th><td><input type="text" name="evg_contact_details_path" class="regular-text" placeholder="/api/v2.0/contact-details/{id}" value="<?php echo esc_attr(get_option('evg_contact_details_path','/api/v2.0/contact-details/{id}')); ?>"></td></tr>
+                    <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v2.0/custom-field?kind=E&amp;limit=100" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100')); ?>"></td></tr>
+                    <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v2.0/member/{id}/custom-fields?limit=100" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields?limit=100')); ?>"></td></tr>
                     <tr><th>Member→Groups Path</th><td><input type="text" name="evg_member_groups_path" class="regular-text" placeholder="/api/v2.0/member/{id}/groups" value="<?php echo esc_attr(get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups')); ?>"></td></tr>
                     <tr><th>Debug</th><td><label><input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',1)); ?>> aktivieren</label></td></tr>
                 </table>

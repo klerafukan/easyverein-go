@@ -51,18 +51,36 @@ class EVG_Sync {
         $wpdb->query('TRUNCATE TABLE '.$this->table('member_groups'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('members'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('groups'));
+        $wpdb->query('TRUNCATE TABLE '.$this->table('custom_fields'));
+        $wpdb->query('TRUNCATE TABLE '.$this->table('member_custom_fields'));
         $skip = (int) get_option('evg_sync_skip_groups', 0 );
         $state=[
             'phase'=>'groups',
             'skip_groups'=>($skip?1:0),
-            'pages'=>['groups'=>0,'members_list'=>0],
-            'counts'=>['groups'=>0,'members_list'=>0,'details'=>0,'member_groups'=>0],
-            'est'=>['groups'=>1,'members_list'=>1,'details'=>0,'member_groups'=>($skip?0:1)],
+            'pages'=>['groups'=>0,'custom_fields'=>0,'members_list'=>0],
+            'counts'=>[
+                'groups'=>0,
+                'custom_fields'=>0,
+                'members_list'=>0,
+                'details'=>0,
+                'member_custom_fields'=>0,
+                'member_groups'=>0
+            ],
+            'est'=>[
+                'groups'=>1,
+                'custom_fields'=>1,
+                'members_list'=>1,
+                'details'=>0,
+                'member_custom_fields'=>1,
+                'member_groups'=>($skip?0:1)
+            ],
             'next'=>[ 
                 'groups'=>$this->base().get_option('evg_groups_path','/api/v2.0/member-group'),
-                'members_list'=>$this->base().get_option('evg_members_path','/api/v2.0/member') 
+                'custom_fields'=>$this->base().get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100'),
+                'members_list'=>$this->base().get_option('evg_members_path','/api/v2.0/member')
             ],
             'member_ids'=>[],
+            'custom_field_types'=>[],
             'member_index'=>0,
             'cap'=>max(0,(int)$cap),
             'done'=>false
@@ -72,7 +90,22 @@ class EVG_Sync {
 
     private function progress($s){
         $only = !empty($s['skip_groups']);
-        $weights = $only ? ['groups'=>0.1,'members_list'=>0.45,'details'=>0.45] : ['groups'=>0.1,'members_list'=>0.4,'details'=>0.4,'member_groups'=>0.1];
+        $weights = $only
+            ? [
+                'groups'=>0.10,
+                'custom_fields'=>0.12,
+                'members_list'=>0.35,
+                'details'=>0.25,
+                'member_custom_fields'=>0.18
+            ]
+            : [
+                'groups'=>0.10,
+                'custom_fields'=>0.10,
+                'members_list'=>0.30,
+                'details'=>0.20,
+                'member_custom_fields'=>0.20,
+                'member_groups'=>0.10
+            ];
         $p = 0.0;
         foreach($weights as $k=>$weight){
             $est = max(1, isset($s['est'][$k]) ? $s['est'][$k] : 1);
@@ -82,8 +115,10 @@ class EVG_Sync {
         $label  = ($only ? '(ohne Gruppen) ' : '');
         $label .= (isset($s['phase']) ? $s['phase'] : '');
         $label .= ' – G:' . (isset($s['counts']['groups']) ? (string)$s['counts']['groups'] : '0');
+        $label .= ' CF:' . (isset($s['counts']['custom_fields']) ? (string)$s['counts']['custom_fields'] : '0');
         $label .= ' M:' . (isset($s['counts']['members_list']) ? (string)$s['counts']['members_list'] : '0');
         $label .= ' D:' . (isset($s['counts']['details']) ? (string)$s['counts']['details'] : '0');
+        $label .= ' MC:' . (isset($s['counts']['member_custom_fields']) ? (string)$s['counts']['member_custom_fields'] : '0');
         $label .= ' L:' . (isset($s['counts']['member_groups']) ? (string)$s['counts']['member_groups'] : '0');
         return ['percent'=>100*$p,'label'=>$label,'done'=>!empty($s['done'])];
     }
@@ -94,17 +129,41 @@ class EVG_Sync {
         if (empty($s)) return ['ok'=>false,'summary'=>'Kein aktiver Job'];
         if (!empty($s['done'])) return ['ok'=>true,'done'=>true,'percent'=>100,'label'=>'Fertig'];
 
+        if (!isset($s['custom_field_types']) || !is_array($s['custom_field_types'])){
+            $s['custom_field_types'] = [];
+        }
+        if (!isset($s['pages']['custom_fields'])){
+            $s['pages']['custom_fields'] = 0;
+        }
+        if (!isset($s['counts']['custom_fields'])){
+            $s['counts']['custom_fields'] = 0;
+        }
+        if (!isset($s['counts']['member_custom_fields'])){
+            $s['counts']['member_custom_fields'] = 0;
+        }
+        if (!isset($s['est']['custom_fields'])){
+            $s['est']['custom_fields'] = 1;
+        }
+        if (!isset($s['est']['member_custom_fields'])){
+            $s['est']['member_custom_fields'] = 1;
+        }
+        if (!isset($s['next']['custom_fields'])){
+            $s['next']['custom_fields'] = $this->base().get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100');
+        }
+
         $m_table=$this->table('members');
         $g_table=$this->table('groups');
         $x_table=$this->table('member_groups');
+        $cf_table=$this->table('custom_fields');
+        $mv_table=$this->table('member_custom_fields');
 
         $calls=0; $max=$this->calls_per_tick();
         while($calls<$max){
             if($s['phase']==='groups'){
                 $url=$s['next']['groups'];
                 if(!$url || $s['pages']['groups'] >= $this->pages_max()){
-                    $s['phase']='members_list';
-                    $s['est']['members_list']=max(1,count($s['member_ids']));
+                    $s['phase']='custom_fields';
+                    $s['est']['custom_fields']=max(1,$s['counts']['custom_fields'] ?: 1);
                     continue;
                 }
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
@@ -138,12 +197,102 @@ class EVG_Sync {
                 $s['pages']['groups']++;
                 $s['next']['groups']=$this->next_url($next);
             }
+            elseif($s['phase']==='custom_fields'){
+                $url = isset($s['next']['custom_fields']) ? $s['next']['custom_fields'] : null;
+                if(!$url || $s['pages']['custom_fields'] >= $this->pages_max()){
+                    $s['phase']='members_list';
+                    $s['est']['members_list']=max(1,count($s['member_ids']));
+                    continue;
+                }
+                $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
+                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                $code=wp_remote_retrieve_response_code($resp);
+                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Custom-Fields HTTP '.$code];
+                $body=json_decode(wp_remote_retrieve_body($resp),true);
+                $items=[]; $next=null;
+                if (is_array($body)){
+                    if (array_keys($body)===range(0,count($body)-1)) $items=$body;
+                    else { $items=$body['results']??$body['data']??$body['items']??[]; $next=$body['next']??null; }
+                }
+                $now=current_time('mysql',1);
+                foreach((array)$items as $field){
+                    $fid = null;
+                    foreach(['id','uuid','pk','customFieldId','fieldId'] as $fidKey){
+                        if (isset($field[$fidKey]) && $field[$fidKey] !== ''){
+                            if (is_array($field[$fidKey])){
+                                continue;
+                            }
+                            $fid = (string)$field[$fidKey];
+                            break;
+                        }
+                    }
+                    if (!$fid && isset($field['url']) && is_string($field['url'])){
+                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$field['url'],$m)){
+                            $fid=$m[1];
+                        }
+                    }
+                    if (!$fid && isset($field['href']) && is_string($field['href'])){
+                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$field['href'],$m)){
+                            $fid=$m[1];
+                        }
+                    }
+                    if(!$fid) continue;
+                    $name = isset($field['name']) ? (string)$field['name'] : '';
+                    $settings_type = isset($field['settings_type']) ? (string)$field['settings_type'] : (isset($field['settingsType']) ? (string)$field['settingsType'] : '');
+                    $kind = isset($field['kind']) ? (string)$field['kind'] : '';
+                    $member_show = !empty($field['member_show']) || !empty($field['memberShow']) ? 1 : 0;
+                    $member_edit = !empty($field['member_edit']) || !empty($field['memberEdit']) ? 1 : 0;
+                    $position = isset($field['position']) ? intval($field['position']) : 0;
+                    $collection = '';
+                    if (isset($field['collection'])){
+                        if (is_numeric($field['collection'])){
+                            $collection = (string)$field['collection'];
+                        } elseif (is_string($field['collection'])){
+                            $collection = $field['collection'];
+                        } elseif (is_array($field['collection'])){
+                            if (isset($field['collection']['id'])){
+                                $collection = (string)$field['collection']['id'];
+                            } elseif (isset($field['collection']['pk'])){
+                                $collection = (string)$field['collection']['pk'];
+                            } elseif (isset($field['collection']['href']) && is_string($field['collection']['href'])){
+                                if (preg_match('~/(?:custom-field-collection|custom-field-collections)/([0-9a-zA-Z_-]+)~',$field['collection']['href'],$m)){
+                                    $collection=$m[1];
+                                }
+                            }
+                        }
+                    }
+                    $s['custom_field_types'][(string)$fid] = $settings_type;
+                    $wpdb->replace(
+                        $cf_table,
+                        [
+                            'field_id'     => (string)$fid,
+                            'name'         => $name,
+                            'settings_type'=> $settings_type,
+                            'kind'         => $kind,
+                            'member_show'  => $member_show,
+                            'member_edit'  => $member_edit,
+                            'position'     => $position,
+                            'collection'   => $collection,
+                            'updated_at'   => $now,
+                            'raw'          => wp_json_encode($field, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+                        ],
+                        ['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']
+                    );
+                    $s['counts']['custom_fields']++;
+                }
+                $s['pages']['custom_fields']++;
+                $s['next']['custom_fields']=$this->next_url($next);
+                if (!$s['next']['custom_fields']){
+                    $s['est']['members_list']=max(1,count($s['member_ids']));
+                }
+            }
             elseif($s['phase']==='members_list'){
                 $url=$s['next']['members_list'];
                 if(!$url || $s['pages']['members_list'] >= $this->pages_max()){
                     $s['phase']='details';
                     $s['member_index']=0;
                     $s['est']['details']=max(1,count($s['member_ids']));
+                    $s['est']['member_custom_fields']=max(1,count($s['member_ids']));
                     continue;
                 }
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
@@ -183,15 +332,17 @@ class EVG_Sync {
                 $s['pages']['members_list']++;
                 $s['next']['members_list']=$this->next_url($next);
                 if($s['cap']>0 && count($s['member_ids']) >= $s['cap']){
-                    $s['phase']='details'; $s['member_index']=0; $s['est']['details']=count($s['member_ids']);
+                    $s['phase']='details';
+                    $s['member_index']=0;
+                    $s['est']['details']=count($s['member_ids']);
+                    $s['est']['member_custom_fields']=count($s['member_ids']);
                 }
             }
             elseif($s['phase']==='details'){
                 if ($s['member_index'] >= count($s['member_ids'])){
-                    if (!empty($s['skip_groups'])) { $s['done']=true; break; }
-                    $s['phase']='member_groups';
+                    $s['phase']='member_custom_fields';
                     $s['member_index']=0;
-                    $s['est']['member_groups']=max(1,count($s['member_ids']));
+                    $s['est']['member_custom_fields']=max(1,count($s['member_ids']));
                     continue;
                 }
                 $mid=$s['member_ids'][$s['member_index']];
@@ -300,7 +451,95 @@ class EVG_Sync {
                 }
                 $s['member_index']++;
             }
-            else {
+            elseif($s['phase']==='member_custom_fields'){
+                if ($s['member_index'] >= count($s['member_ids'])){
+                    if (!empty($s['skip_groups'])) { $s['done']=true; break; }
+                    $s['phase']='member_groups';
+                    $s['member_index']=0;
+                    $s['est']['member_groups']=max(1,count($s['member_ids']));
+                    continue;
+                }
+                $mid=$s['member_ids'][$s['member_index']];
+                $cf_path = get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields?limit=100');
+                $cf_url = $this->base().str_replace('{id}',rawurlencode($mid),$cf_path);
+                $resp=evg_http_get($cf_url,$this->headers()); $calls++; $this->rate_sleep();
+                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                $code = wp_remote_retrieve_response_code($resp);
+                if ($code<200 || $code>=300) return ['ok'=>false,'summary'=>'Member-Custom-Fields HTTP '.$code];
+                $payload=json_decode(wp_remote_retrieve_body($resp),true);
+                $items=[];
+                if (is_array($payload)){
+                    if (array_keys($payload)===range(0,count($payload)-1)){
+                        $items=$payload;
+                    } else {
+                        $items=$payload['results']??$payload['data']??$payload['items']??[];
+                    }
+                }
+                $now=current_time('mysql',1);
+                foreach((array)$items as $entry){
+                    $field_id=null;
+                    $fieldRef=$entry['customField']??$entry['custom_field']??null;
+                    if (is_string($fieldRef) && $fieldRef!==''){
+                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$fieldRef,$m)){
+                            $field_id=$m[1];
+                        } else {
+                            $field_id=$fieldRef;
+                        }
+                    } elseif (is_array($fieldRef)){
+                        if (!empty($fieldRef['id'])){
+                            $field_id=(string)$fieldRef['id'];
+                        } elseif (!empty($fieldRef['pk'])){
+                            $field_id=(string)$fieldRef['pk'];
+                        } elseif (!empty($fieldRef['href']) && is_string($fieldRef['href'])){
+                            if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$fieldRef['href'],$m)){
+                                $field_id=$m[1];
+                            }
+                        }
+                    }
+                    if (!$field_id && isset($entry['customFieldId'])){
+                        $field_id=(string)$entry['customFieldId'];
+                    }
+                    if (!$field_id && isset($entry['fieldId'])){
+                        $field_id=(string)$entry['fieldId'];
+                    }
+                    if (!$field_id) continue;
+
+                    $value = null;
+                    if (array_key_exists('value',$entry)){
+                        $value = $entry['value'];
+                    } elseif (array_key_exists('valueText',$entry)){
+                        $value = $entry['valueText'];
+                    } elseif (array_key_exists('value_text',$entry)){
+                        $value = $entry['value_text'];
+                    }
+                    if (is_array($value)){
+                        $value_text = wp_json_encode($value, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+                    } elseif (is_bool($value)){
+                        $value_text = $value ? '1' : '0';
+                    } elseif (null === $value){
+                        $value_text = '';
+                    } else {
+                        $value_text = (string)$value;
+                    }
+                    if ($value_text === '' && isset($entry['selectOptions']) && is_array($entry['selectOptions'])){
+                        $value_text = wp_json_encode($entry['selectOptions'], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+                    }
+                    $wpdb->replace(
+                        $mv_table,
+                        [
+                            'member_id'  => $mid,
+                            'field_id'   => (string)$field_id,
+                            'value_text' => $value_text,
+                            'updated_at' => $now,
+                            'raw'        => wp_json_encode($entry, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+                        ],
+                        ['%s','%s','%s','%s','%s']
+                    );
+                    $s['counts']['member_custom_fields']++;
+                }
+                $s['member_index']++;
+            }
+            elseif($s['phase']==='member_groups'){
                 if ($s['member_index'] >= count($s['member_ids'])) { $s['done']=true; break; }
                 $mid=$s['member_ids'][$s['member_index']];
                 $gurl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups'));
@@ -384,6 +623,9 @@ class EVG_Sync {
                     }
                 }
                 $s['member_index']++;
+            }
+            else {
+                return ['ok'=>false,'summary'=>'Unbekannte Phase: '.(isset($s['phase'])?$s['phase']:'<none>')];
             }
         }
         $this->put_state($s);
