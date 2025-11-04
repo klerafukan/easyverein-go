@@ -40,9 +40,10 @@ class EVG_Admin {
         register_setting('evg_settings','evg_sync_rate_per_sec',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
         register_setting('evg_settings','evg_sync_calls_per_tick',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
         register_setting('evg_settings','evg_tick_pause_ms',['type'=>'integer','sanitize_callback'=>'absint','default'=>900]);
-        register_setting('evg_settings','evg_sync_skip_groups',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         register_setting('evg_settings','evg_nightly_sync_enabled',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         register_setting('evg_settings','evg_nightly_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg_nightly']);
+        register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
+        register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
     }
 
     private function headers(){
@@ -68,7 +69,18 @@ class EVG_Admin {
                     <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v2.0/custom-field" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v2.0/custom-field')); ?>"></td></tr>
                     <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v2.0/member/{id}/custom-fields" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields')); ?>"></td></tr>
                     <tr><th>Member→Groups Path</th><td><input type="text" name="evg_member_groups_path" class="regular-text" placeholder="/api/v2.0/member/{id}/groups" value="<?php echo esc_attr(get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups')); ?>"></td></tr>
-                    <tr><th>Debug</th><td><label><input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',1)); ?>> aktivieren</label></td></tr>
+                    <tr>
+                        <th>Debug</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',1)); ?>>
+                                <?php esc_html_e('aktivieren (API-Aufrufe protokollieren)','ev-groups'); ?>
+                            </label>
+                            <p class="description">
+                                <?php esc_html_e('Hinweis: Unabhängig von dieser Option werden HTTP-Fehler (z. B. 4xx/5xx) zur Diagnose gespeichert.','ev-groups'); ?>
+                            </p>
+                        </td>
+                    </tr>
                 </table>
                 <h2><?php echo esc_html__('Taktung & Limits','ev-groups'); ?></h2>
                 <table class="form-table">
@@ -76,7 +88,14 @@ class EVG_Admin {
                     <tr><th>Requests/Sek.</th><td><input type="number" name="evg_sync_rate_per_sec" value="<?php echo esc_attr(get_option('evg_sync_rate_per_sec',5)); ?>"></td></tr>
                     <tr><th>Calls pro Tick</th><td><input type="number" name="evg_sync_calls_per_tick" value="<?php echo esc_attr(get_option('evg_sync_calls_per_tick',5)); ?>"></td></tr>
                     <tr><th>Tick-Pause (ms)</th><td><input type="number" name="evg_tick_pause_ms" value="<?php echo esc_attr(get_option('evg_tick_pause_ms',900)); ?>"></td></tr>
-                    <tr><th>Nur Mitglieder + Details (ohne Gruppen)</th><td><label><input type="checkbox" name="evg_sync_skip_groups" value="1" <?php checked(1,(int)get_option('evg_sync_skip_groups',0)); ?>> aktivieren</label></td></tr>
+                    <tr>
+                        <th><?php esc_html_e('Tabellen-Präfix (manuell)','ev-groups'); ?></th>
+                        <td>
+                            <?php $manual_prefix = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg')); ?>
+                            <input type="text" name="evg_manual_sync_table_prefix" class="regular-text" value="<?php echo esc_attr($manual_prefix); ?>">
+                            <p class="description"><?php esc_html_e('Wird für manuelle Sync-Läufe (Buttons unten) verwendet. Standard ist „evg“.','ev-groups'); ?></p>
+                        </td>
+                    </tr>
                     <tr>
                         <th><?php esc_html_e('Nächtlicher Sync','ev-groups'); ?></th>
                         <td>
@@ -95,6 +114,14 @@ class EVG_Admin {
                             <p class="description">
                                 <?php esc_html_e('Standard: evg_nightly – für produktive Tabellen „evg“ eintragen. Eigene Werte werden automatisch bereinigt (a–z, 0–9, Unterstrich).','ev-groups'); ?>
                             </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th><?php esc_html_e('Empfänger Sync-Protokoll','ev-groups'); ?></th>
+                        <td>
+                            <?php $report_email = get_option('evg_sync_report_email',''); ?>
+                            <input type="email" name="evg_sync_report_email" class="regular-text" value="<?php echo esc_attr($report_email); ?>">
+                            <p class="description"><?php esc_html_e('Lässt sich optional nutzen, um Nachtlauf-Protokolle an eine alternative Adresse zu senden. Leer lassen = Admin-E-Mail.','ev-groups'); ?></p>
                         </td>
                     </tr>
                 </table>
@@ -121,7 +148,9 @@ class EVG_Admin {
             const log=document.getElementById('evg-log');
             const tOut=document.getElementById('evg-test-conn-out');
             const tickPause = parseInt('<?php echo (int) get_option("evg_tick_pause_ms",900); ?>',10)||900;
+            const manualPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'))); ?>';
             const nightlyPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'))); ?>';
+            const manualPrefix = manualPrefixRaw || 'evg';
             const nightlyPrefix = nightlyPrefixRaw || 'evg_nightly';
             let currentPrefix = 'evg';
             let jobFinished = false;
@@ -163,7 +192,7 @@ class EVG_Admin {
                     }
                 });
             }
-            document.getElementById('evg-sync-start').onclick=function(e){ e.preventDefault(); startSync('evg'); };
+            document.getElementById('evg-sync-start').onclick=function(e){ e.preventDefault(); startSync(manualPrefix); };
             document.getElementById('evg-sync-quick10').onclick=function(e){ e.preventDefault(); startSync(nightlyPrefix,10); };
         })();
         </script>
@@ -366,14 +395,21 @@ class EVG_Admin {
     }
 
     private function sanitize_prefix_from_request($value){
-        $allowed = ['evg'];
+        $manual = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'));
+        if ($manual === '') {
+            $manual = 'evg';
+        }
+        $allowed = [$manual];
+        if ($manual !== 'evg'){
+            $allowed[] = 'evg';
+        }
         $nightly = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'));
         if ($nightly !== '' && !in_array($nightly, $allowed, true)){
             $allowed[] = $nightly;
         }
         $prefix = evg_sanitize_table_prefix((string)$value);
         if ($prefix === '' || !in_array($prefix, $allowed, true)){
-            return 'evg';
+            return $manual;
         }
         return $prefix;
     }
@@ -384,6 +420,9 @@ class EVG_Admin {
         $cap = isset($_POST['cap']) ? max(0, intval($_POST['cap'])) : 0;
         $requested_prefix = isset($_POST['prefix']) ? wp_unslash($_POST['prefix']) : '';
         $prefix = $this->sanitize_prefix_from_request($requested_prefix);
+        if (class_exists('EVG_Plugin')){
+            EVG_Plugin::ensure_schema_for_prefix($prefix);
+        }
         $sync = new EVG_Sync($prefix);
         $sync->job_start($cap);
         wp_send_json_success(['prefix'=>$sync->get_table_prefix()]);

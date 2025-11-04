@@ -2,13 +2,13 @@
 /**
  * Plugin Name: Easyverein Go
  * Description: Mitglieder-Sync + lokales Frontend. Speichert und nutzt den contact-details Link pro Mitglied. Benutzerbezogene Gruppenfreigabe.
- * Version: 3.0.0
+ * Version: 3.1.0
  * Author: Tilmann Laux
  * Text Domain: ev-groups
  */
 if (!defined('ABSPATH')) { exit; }
 
-define('EVG_VERSION','3.0.0');
+define('EVG_VERSION','3.1.0');
 define('EVG_SLUG','easyverein-go');
 define('EVG_PATH', plugin_dir_path(__FILE__));
 define('EVG_URL', plugin_dir_url(__FILE__));
@@ -49,9 +49,10 @@ class EVG_Plugin {
             'evg_sync_rate_per_sec'   => 5,
             'evg_sync_calls_per_tick' => 5,
             'evg_tick_pause_ms'       => 900,
-            'evg_sync_skip_groups'    => 0,
             'evg_nightly_sync_enabled'=> 0,
-            'evg_nightly_sync_table_prefix'=> self::NIGHTLY_TABLE_PREFIX
+            'evg_manual_sync_table_prefix'=> 'evg',
+            'evg_nightly_sync_table_prefix'=> self::NIGHTLY_TABLE_PREFIX,
+            'evg_sync_report_email' => ''
         ];
         foreach($defaults as $k=>$v){ if (null===get_option($k,null)) update_option($k,$v); }
         $this->ensure_tables_for_prefix('evg');
@@ -66,6 +67,8 @@ class EVG_Plugin {
         $defaults = [
             'evg_custom_fields_path'         => '/api/v2.0/custom-field',
             'evg_member_custom_fields_path'  => '/api/v2.0/member/{id}/custom-fields',
+            'evg_manual_sync_table_prefix'   => 'evg',
+            'evg_nightly_sync_table_prefix'  => self::NIGHTLY_TABLE_PREFIX,
         ];
         foreach ($defaults as $key => $value) {
             $current = get_option($key, null);
@@ -89,6 +92,12 @@ class EVG_Plugin {
             }
             if (strpos($normalized, 'https://easyverein.com/api/v2.0/member/') === 0) {
                 $normalized = '/api/v2.0/member/{id}/custom-fields';
+            }
+            if ($key === 'evg_manual_sync_table_prefix' || $key === 'evg_nightly_sync_table_prefix') {
+                $normalized = EVG_Sync::sanitize_table_prefix($normalized);
+                if ($normalized === '') {
+                    $normalized = ($key === 'evg_manual_sync_table_prefix') ? 'evg' : self::NIGHTLY_TABLE_PREFIX;
+                }
             }
             if ($normalized !== $current) {
                 update_option($key, $normalized);
@@ -200,6 +209,14 @@ class EVG_Plugin {
     }
     public function init(){
         $this->ensure_tables_for_prefix('evg');
+        $manual_prefix = EVG_Sync::sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'));
+        if ($manual_prefix !== '' && $manual_prefix !== 'evg'){
+            $this->ensure_tables_for_prefix($manual_prefix);
+        }
+        $nightly_prefix = EVG_Sync::sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix',self::NIGHTLY_TABLE_PREFIX));
+        if ($nightly_prefix !== '' && $nightly_prefix !== 'evg' && $nightly_prefix !== $manual_prefix){
+            $this->ensure_tables_for_prefix($nightly_prefix);
+        }
         $this->ensure_runtime_option_defaults();
         new EVG_Admin();
         new EVG_Sync();
@@ -245,8 +262,11 @@ class EVG_Plugin {
     }
 
     private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array(),$table_prefix='evg'){
-        $admin_email=get_option('admin_email');
-        if(!$admin_email || !is_email($admin_email)){
+        $report_email = trim((string) get_option('evg_sync_report_email',''));
+        if ($report_email === '' || !is_email($report_email)){
+            $report_email = get_option('admin_email');
+        }
+        if(!$report_email || !is_email($report_email)){
             return;
         }
         $site_name=wp_specialchars_decode(get_bloginfo('name'),ENT_QUOTES);
@@ -313,7 +333,7 @@ class EVG_Plugin {
             }
         }
 
-        wp_mail($admin_email,$subject,implode("\n",$lines));
+        wp_mail($report_email,$subject,implode("\n",$lines));
     }
 
     private function next_cron_timestamp(){

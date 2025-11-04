@@ -15,7 +15,17 @@ function evg_sanitize_table_prefix($prefix){
     return $prefix!==''?$prefix:'evg';
 }
 function evg_debug_log_api($context){
-    if (!get_option('evg_debug',0)) return;
+    $status_raw = $context['status'] ?? 'ERR';
+    $status_int = is_numeric($status_raw) ? (int) $status_raw : null;
+    $debug_enabled = (int) get_option('evg_debug',0) === 1;
+    if (!$debug_enabled){
+        if ($status_int !== null && $status_int < 400){
+            return;
+        }
+        if ($status_int === null && !empty($context['note']) && strpos($context['note'],'wp_error') === false){
+            return;
+        }
+    }
     $dir = trailingslashit(WP_CONTENT_DIR).'easyverein-debug';
     if (!file_exists($dir)){ wp_mkdir_p($dir); @file_put_contents($dir.'/.htaccess',"Require all denied\n"); @file_put_contents($dir.'/index.html',""); }
     $headers = (array)($context['headers']??[]);
@@ -23,7 +33,7 @@ function evg_debug_log_api($context){
         if (stripos($k,'authorization')!==false) $headers[$k] = 'Bearer XXXXX';
         if (stripos($k,'x-api-key')!==false)     $headers[$k] = 'XXXXX';
     }
-    $status = $context['status'] ?? 'ERR';
+    $status = $status_raw;
     $ep = evg__endpoint_key_from_url($context['url'] ?? '');
     $payload = [
         'ts'=>current_time('mysql'),

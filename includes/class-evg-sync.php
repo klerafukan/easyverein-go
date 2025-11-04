@@ -282,10 +282,8 @@ class EVG_Sync {
         $wpdb->query('TRUNCATE TABLE '.$this->table('custom_fields'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('member_custom_fields'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('custom_field_values'));
-        $skip = (int) get_option('evg_sync_skip_groups', 0 );
         $state=[
             'phase'=>'groups',
-            'skip_groups'=>($skip?1:0),
             'pages'=>['groups'=>0,'custom_fields'=>0,'members_list'=>0],
             'counts'=>[
                 'groups'=>0,
@@ -303,7 +301,7 @@ class EVG_Sync {
                 'members_list'=>1,
                 'details'=>0,
                 'member_custom_fields'=>1,
-                'member_groups'=>($skip?0:1)
+                'member_groups'=>1
             ],
             'next'=>[ 
                 'groups'=>$this->normalize_endpoint(get_option('evg_groups_path','/api/v2.0/member-group')),
@@ -322,33 +320,22 @@ class EVG_Sync {
     }
 
     private function progress($s){
-        $only = !empty($s['skip_groups']);
-        $weights = $only
-            ? [
-                'groups'=>0.05,
-                'custom_fields'=>0.20,
-                'custom_field_values'=>0.20,
-                'members_list'=>0.25,
-                'details'=>0.15,
-                'member_custom_fields'=>0.15
-            ]
-            : [
-                'groups'=>0.10,
-                'custom_fields'=>0.15,
-                'custom_field_values'=>0.10,
-                'members_list'=>0.25,
-                'details'=>0.15,
-                'member_custom_fields'=>0.15,
-                'member_groups'=>0.10
-            ];
+        $weights = [
+            'groups'=>0.10,
+            'custom_fields'=>0.15,
+            'custom_field_values'=>0.10,
+            'members_list'=>0.25,
+            'details'=>0.15,
+            'member_custom_fields'=>0.15,
+            'member_groups'=>0.10
+        ];
         $p = 0.0;
         foreach($weights as $k=>$weight){
             $est = max(1, isset($s['est'][$k]) ? $s['est'][$k] : 1);
             $cnt = isset($s['counts'][$k]) ? $s['counts'][$k] : 0;
             $p += $weight * min(1.0, $cnt / $est);
         }
-        $label  = ($only ? '(ohne Gruppen) ' : '');
-        $label .= (isset($s['phase']) ? $s['phase'] : '');
+        $label  = (isset($s['phase']) ? $s['phase'] : '');
         $label .= ' – G:' . (isset($s['counts']['groups']) ? (string)$s['counts']['groups'] : '0');
         $label .= ' CF:' . (isset($s['counts']['custom_fields']) ? (string)$s['counts']['custom_fields'] : '0');
         $label .= ' CFV:' . (isset($s['counts']['custom_field_values']) ? (string)$s['counts']['custom_field_values'] : '0');
@@ -703,7 +690,6 @@ class EVG_Sync {
             }
             elseif($s['phase']==='member_custom_fields'){
                 if ($s['member_index'] >= count($s['member_ids'])){
-                    if (!empty($s['skip_groups'])) { $s['done']=true; break; }
                     $s['phase']='member_groups';
                     $s['member_index']=0;
                     $s['est']['member_groups']=max(1,count($s['member_ids']));

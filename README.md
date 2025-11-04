@@ -1,6 +1,6 @@
 # Easyverein Go
 
-Aktuelle Plugin-Version: **3.0.0**
+Aktuelle Plugin-Version: **3.1.0**
 
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
@@ -23,8 +23,9 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
   Zusätzlich zu Gruppen lassen sich nun individuelle Custom-Field-Werte je WordPress-Benutzer freischalten. Im Profil werden alle synchronisierten Feld/Wert-Kombinationen angeboten – die Auswahl bestimmt, welche Merkmalsfilter im Frontend sichtbar sind und welche Datensätze der Benutzer sehen darf.
 
 - **Admin-Einstellungen**  
-  Konfigurierbare API-Parameter (URL, Key, Endpoints) und Sync-Limits (Rate, Calls pro Tick, Seitenlimit, „nur Mitglieder ohne Gruppen“).  
-  Checkbox zum Aktivieren des automatischen nächtlichen Syncs.  
+  Konfigurierbare API-Parameter (URL, Key, Endpoints) und Sync-Limits (Rate, Calls pro Tick, Seitenlimit).  
+  Separate Tabellen-Präfixe für manuellen und nächtlichen Sync.  
+  Empfängeradresse für das Nachtlauf-Protokoll frei wählbar (optional).  
   Debug-Modus schreibt API-Request-Protokolle unter `wp-content/easyverein-debug/`.
 
 ## Installation & Setup
