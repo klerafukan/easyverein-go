@@ -121,15 +121,41 @@ class EVG_Admin {
             const log=document.getElementById('evg-log');
             const tOut=document.getElementById('evg-test-conn-out');
             const tickPause = parseInt('<?php echo (int) get_option("evg_tick_pause_ms",900); ?>',10)||900;
+            const nightlyPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'))); ?>';
+            const nightlyPrefix = nightlyPrefixRaw || 'evg_nightly';
+            let currentPrefix = 'evg';
             function push(line){ const ts=new Date().toLocaleTimeString(); log.textContent='['+ts+'] '+line+'\n'+log.textContent; }
             function setP(p,txt){ if(p<0)p=0;if(p>100)p=100; bar.style.width=p.toFixed(1)+'%'; if(txt) push(txt+' ('+p.toFixed(1)+'%)'); }
 
             document.getElementById('evg-test-conn').onclick=function(e){ e.preventDefault(); tOut.textContent='teste…';
                 jQuery.post(ajax,{action:'evg_test_connection',_wpnonce:n1},function(r){ tOut.textContent=(r&&r.success&&r.data&&r.data.message)?r.data.message:'OK'; }).fail(function(){ tOut.textContent='Netzwerkfehler'; });
             };
-            function tick(){ jQuery.post(ajax,{action:'evg_sync_tick',_wpnonce:n1},function(r){ if(r&&r.success){ const d=r.data||{}; setP(d.percent||0, d.label||'…'); if(!d.done) setTimeout(tick,tickPause); } }); }
-            document.getElementById('evg-sync-start').onclick=function(e){ e.preventDefault(); jQuery.post(ajax,{action:'evg_sync_start',_wpnonce:n1},function(r){ if(r&&r.success){ push('Job gestartet'); setP(0,'Start'); tick(); } }); };
-            document.getElementById('evg-sync-quick10').onclick=function(e){ e.preventDefault(); jQuery.post(ajax,{action:'evg_sync_start',_wpnonce:n1,cap:10},function(r){ if(r&&r.success){ push('Quick-Job (10) gestartet'); setP(0,'Start'); tick(); } }); };
+            function tick(){
+                jQuery.post(ajax,{action:'evg_sync_tick',_wpnonce:n1,prefix:currentPrefix},function(r){
+                    if(r&&r.success){
+                        const d=r.data||{};
+                        setP(d.percent||0, d.label||'…');
+                        if(!d.done) setTimeout(tick,tickPause);
+                    }
+                });
+            }
+            function startSync(prefix,cap){
+                currentPrefix = (prefix && prefix.length) ? prefix : 'evg';
+                const payload = {action:'evg_sync_start',_wpnonce:n1,prefix:currentPrefix};
+                if(cap){ payload.cap = cap; }
+                jQuery.post(ajax,payload,function(r){
+                    if(r&&r.success){
+                        const serverPrefix = r.data && r.data.prefix ? r.data.prefix : currentPrefix;
+                        currentPrefix = serverPrefix || currentPrefix;
+                        const title = cap ? 'Quick-Job ('+cap+')' : 'Job';
+                        push(title+' gestartet ['+currentPrefix+']');
+                        setP(0,'Start');
+                        tick();
+                    }
+                });
+            }
+            document.getElementById('evg-sync-start').onclick=function(e){ e.preventDefault(); startSync('evg'); };
+            document.getElementById('evg-sync-quick10').onclick=function(e){ e.preventDefault(); startSync(nightlyPrefix,10); };
         })();
         </script>
     <?php }
@@ -252,6 +278,38 @@ class EVG_Admin {
         wp_send_json_success(['message'=>$msg]);
     }
 
-    public function ajax_sync_start(){ check_ajax_referer('evg_sync'); if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403); $cap=isset($_POST['cap'])?max(0,intval($_POST['cap'])):0; $s=new EVG_Sync(); $s->job_start($cap); wp_send_json_success(); }
-    public function ajax_sync_tick(){ check_ajax_referer('evg_sync'); if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403); $s=new EVG_Sync(); $res=$s->job_tick(); if($res['ok']) wp_send_json_success($res); wp_send_json_error(['message'=>$res['summary']]); }
+    private function sanitize_prefix_from_request($value){
+        $allowed = ['evg'];
+        $nightly = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'));
+        if ($nightly !== '' && !in_array($nightly, $allowed, true)){
+            $allowed[] = $nightly;
+        }
+        $prefix = evg_sanitize_table_prefix((string)$value);
+        if ($prefix === '' || !in_array($prefix, $allowed, true)){
+            return 'evg';
+        }
+        return $prefix;
+    }
+
+    public function ajax_sync_start(){
+        check_ajax_referer('evg_sync');
+        if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+        $cap = isset($_POST['cap']) ? max(0, intval($_POST['cap'])) : 0;
+        $requested_prefix = isset($_POST['prefix']) ? wp_unslash($_POST['prefix']) : '';
+        $prefix = $this->sanitize_prefix_from_request($requested_prefix);
+        $sync = new EVG_Sync($prefix);
+        $sync->job_start($cap);
+        wp_send_json_success(['prefix'=>$sync->get_table_prefix()]);
+    }
+
+    public function ajax_sync_tick(){
+        check_ajax_referer('evg_sync');
+        if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+        $requested_prefix = isset($_POST['prefix']) ? wp_unslash($_POST['prefix']) : '';
+        $prefix = $this->sanitize_prefix_from_request($requested_prefix);
+        $sync=new EVG_Sync($prefix);
+        $res=$sync->job_tick();
+        if($res['ok']) wp_send_json_success($res);
+        wp_send_json_error(['message'=>$res['summary']]);
+    }
 }
