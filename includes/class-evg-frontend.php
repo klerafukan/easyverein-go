@@ -15,7 +15,8 @@ class EVG_Frontend {
         'zip',
         'city',
         'street',
-        'groups'
+        'groups',
+        'custom_fields'
     ];
 
     private const COLUMN_LABELS = [
@@ -34,6 +35,7 @@ class EVG_Frontend {
         'address_suffix' => 'Adresszusatz',
         'group_name'     => 'Gruppe',
         'groups'         => 'Gruppen',
+        'custom_fields'  => 'Merkmale',
         'member_number'  => 'Mitgliedsnummer',
         'contact_details'=> 'Kontakt-Details'
     ];
@@ -66,6 +68,7 @@ class EVG_Frontend {
             <div class="evg-toolbar">
                 <input type="text" class="evg-search" placeholder="<?php echo esc_attr__('Suchen…','ev-groups'); ?>" />
                 <select class="evg-group-filter"><option value=""><?php echo esc_html__('Alle Gruppen','ev-groups'); ?></option></select>
+                <select class="evg-custom-filter" style="display:none;"><option value=""><?php echo esc_html__('Alle Merkmale','ev-groups'); ?></option></select>
                 <button type="button" class="button evg-export"><?php echo esc_html__('CSV exportieren','ev-groups'); ?></button>
             </div>
             <div class="evg-meta">
@@ -99,49 +102,107 @@ class EVG_Frontend {
         if ( ! is_user_logged_in() ) wp_send_json_error(array('message'=>'Login required'),401);
 
         $user_id = get_current_user_id();
-        $allow_all = (int) get_user_meta($user_id, 'evg_groups_all', true);
-        $selected_ids = get_user_meta($user_id,'evg_groups',true);
-        if (!is_array($selected_ids)) $selected_ids = [];
-        $restrict = !$allow_all && !empty($selected_ids);
+
+        $allow_all_groups = (int) get_user_meta($user_id, 'evg_groups_all', true);
+        $selected_group_ids = get_user_meta($user_id,'evg_groups',true);
+        if (!is_array($selected_group_ids)) {
+            $selected_group_ids = [];
+        }
+        $selected_group_ids = array_values(array_filter(array_map('strval', $selected_group_ids)));
+        $restrict_groups = !$allow_all_groups && !empty($selected_group_ids);
+
+        $custom_allow_all = (int) get_user_meta($user_id, 'evg_custom_filters_all', true);
+        $custom_selected_tokens = get_user_meta($user_id, 'evg_custom_filters', true);
+        if (!is_array($custom_selected_tokens)) {
+            $custom_selected_tokens = [];
+        }
+        $custom_selected_tokens = array_values(array_filter(array_map('strval', $custom_selected_tokens)));
+        $custom_field_map = [];
+        foreach ($custom_selected_tokens as $token){
+            if (strpos($token, '|') === false) {
+                continue;
+            }
+            list($field_part, $hash_part) = explode('|', $token, 2);
+            $field_part = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$field_part);
+            $hash_part = strtolower(preg_replace('/[^a-f0-9]/i', '', (string)$hash_part));
+            if ($field_part === '' || strlen($hash_part) !== 32) {
+                continue;
+            }
+            $field_key = strtolower($field_part);
+            if (!isset($custom_field_map[$field_key])) {
+                $custom_field_map[$field_key] = [];
+            }
+            $custom_field_map[$field_key][] = $hash_part;
+        }
+        foreach ($custom_field_map as $field => $hashes){
+            $custom_field_map[$field] = array_values(array_unique($hashes));
+            if (empty($custom_field_map[$field])) {
+                unset($custom_field_map[$field]);
+            }
+        }
+        $custom_restrict = !$custom_allow_all && !empty($custom_field_map);
 
         global $wpdb;
-        $g_table = $wpdb->prefix.'evg_groups';
-        $m_table = $wpdb->prefix.'evg_members';
-        $x_table = $wpdb->prefix.'evg_member_groups';
+        $g_table  = $wpdb->prefix.'evg_groups';
+        $m_table  = $wpdb->prefix.'evg_members';
+        $x_table  = $wpdb->prefix.'evg_member_groups';
+        $mc_table = $wpdb->prefix.'evg_member_custom_fields';
+        $cf_table = $wpdb->prefix.'evg_custom_fields';
+        $cv_table = $wpdb->prefix.'evg_custom_field_values';
 
-        // Get available groups for filter dropdown
-        if ($restrict){
-            $in = implode("','", array_map('esc_sql',$selected_ids));
-            $gr = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table WHERE group_id IN ('$in')");
+        if ($restrict_groups){
+            $in = implode("','", array_map('esc_sql', $selected_group_ids));
+            $group_results = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table WHERE group_id IN ('$in')");
         } else {
-            $gr = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table");
+            $group_results = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table");
         }
-        $groups = array(); 
-        foreach((array)$gr as $row){ 
-            $groups[$row->group_id] = $row->label; 
+        $groups = array();
+        foreach((array)$group_results as $row){
+            $groups[$row->group_id] = $row->label;
         }
 
-        // Get members with their group names properly aggregated
-        if ($restrict){
-            $in = implode("','", array_map('esc_sql',$selected_ids));
-            $sql = "SELECT m.*, 
-                           COALESCE(GROUP_CONCAT(COALESCE(NULLIF(g.name,''), x.group_id) SEPARATOR '||'), '') AS group_names
-                    FROM $m_table m
-                    JOIN $x_table x ON x.member_id = m.member_id
-                    LEFT JOIN $g_table g ON g.group_id = x.group_id
-                    WHERE x.group_id IN ('$in')
-                    GROUP BY m.member_id";
+        $joins = [];
+        $groups_where = '';
+        if ($restrict_groups){
+            $in = implode("','", array_map('esc_sql', $selected_group_ids));
+            $joins[] = "JOIN $x_table x ON x.member_id = m.member_id";
+            $groups_where = "x.group_id IN ('$in')";
         } else {
-            $sql = "SELECT m.*, 
-                           COALESCE(GROUP_CONCAT(COALESCE(NULLIF(g.name,''), x.group_id) SEPARATOR '||'), '') AS group_names
-                    FROM $m_table m
-                    LEFT JOIN $x_table x ON x.member_id = m.member_id
-                    LEFT JOIN $g_table g ON g.group_id = x.group_id
-                    GROUP BY m.member_id";
+            $joins[] = "LEFT JOIN $x_table x ON x.member_id = m.member_id";
         }
+        $joins[] = "LEFT JOIN $g_table g ON g.group_id = x.group_id";
+        $joins[] = "LEFT JOIN $mc_table mc ON mc.member_id = m.member_id";
+        $joins[] = "LEFT JOIN $cf_table cf ON cf.field_id = mc.field_id";
+        $joins[] = "LEFT JOIN $cv_table cv ON cv.field_id = mc.field_id AND cv.value_hash = mc.value_hash";
+
+        $where_clauses = [];
+        if ($groups_where !== ''){
+            $where_clauses[] = $groups_where;
+        }
+        if ($custom_restrict){
+            $exists_cases = [];
+            foreach ($custom_field_map as $field_id => $hashes){
+                $field_sql = esc_sql($field_id);
+                $hash_sql = implode("','", array_map('esc_sql', $hashes));
+                $exists_cases[] = "(mc1.field_id = '{$field_sql}' AND mc1.value_hash IN ('{$hash_sql}'))";
+            }
+            if (!empty($exists_cases)){
+                $exists_sql = "EXISTS (SELECT 1 FROM $mc_table mc1 WHERE mc1.member_id = m.member_id AND (".implode(' OR ', $exists_cases)."))";
+                $where_clauses[] = $exists_sql;
+            }
+        }
+
+        $sql = "SELECT m.*, 
+                       COALESCE(GROUP_CONCAT(DISTINCT COALESCE(NULLIF(g.name,''), x.group_id) SEPARATOR '||'), '') AS group_names,
+                       COALESCE(GROUP_CONCAT(DISTINCT CONCAT(mc.field_id,'|',mc.value_hash) SEPARATOR '||'), '') AS custom_pairs,
+                       COALESCE(GROUP_CONCAT(DISTINCT CONCAT(COALESCE(NULLIF(cf.name,''), mc.field_id),' – ', COALESCE(NULLIF(cv.value_label,''), mc.value_text, mc.value_hash)) SEPARATOR '||'), '') AS custom_labels
+                FROM $m_table m
+                ".implode(' ', $joins).
+                (!empty($where_clauses) ? ' WHERE '.implode(' AND ', $where_clauses) : '').
+                ' GROUP BY m.member_id';
+
         $data = $wpdb->get_results($sql, ARRAY_A);
 
-        // Debug logging if enabled
         if (get_option('evg_debug', 0)) {
             error_log('EVG Frontend SQL: ' . $sql);
             error_log('EVG Frontend Data Count: ' . count($data));
@@ -151,7 +212,7 @@ class EVG_Frontend {
         }
 
         $rows = array();
-        foreach((array)$data as $d){
+        foreach ((array)$data as $d){
             $group_name = isset($d['group_names']) ? $d['group_names'] : '';
             $groups_arr = array();
             if ($group_name !== '') {
@@ -161,12 +222,31 @@ class EVG_Frontend {
                     if ($p !== '') $groups_arr[] = $p;
                 }
             }
-            
-            // Debug individual row if debug is enabled
-            if (get_option('evg_debug', 0) && !empty($group_name)) {
-                error_log('EVG Frontend Group Name: ' . $group_name);
+
+            $custom_pairs_raw = isset($d['custom_pairs']) ? (string)$d['custom_pairs'] : '';
+            $custom_pairs_arr = array();
+            if ($custom_pairs_raw !== ''){
+                foreach (explode('||', $custom_pairs_raw) as $pair){
+                    $pair = strtolower(trim($pair));
+                    if ($pair !== ''){
+                        $custom_pairs_arr[] = $pair;
+                    }
+                }
+                $custom_pairs_arr = array_values(array_unique($custom_pairs_arr));
             }
-            
+
+            $custom_labels_raw = isset($d['custom_labels']) ? (string)$d['custom_labels'] : '';
+            $custom_labels_arr = array();
+            if ($custom_labels_raw !== ''){
+                foreach (explode('||', $custom_labels_raw) as $label){
+                    $label = trim($label);
+                    if ($label !== ''){
+                        $custom_labels_arr[] = $label;
+                    }
+                }
+                $custom_labels_arr = array_values(array_unique($custom_labels_arr));
+            }
+
             $group_name_text = implode(', ', $groups_arr);
             $birth_year = '';
             if (isset($d['birth_year']) && $d['birth_year'] !== null && $d['birth_year'] !== '') {
@@ -193,6 +273,7 @@ class EVG_Frontend {
                     $phone = trim((string)$d['phone']);
                 }
             }
+
             $rows[] = array(
                 'full_name'     => trim((isset($d['first_name'])?$d['first_name']:'').' '.(isset($d['family_name'])?$d['family_name']:'')),
                 'first_name'    => isset($d['first_name'])?$d['first_name']:'',
@@ -209,11 +290,54 @@ class EVG_Frontend {
                 'address_suffix'=> isset($d['address_suffix'])?$d['address_suffix']:'',
                 'group_name'    => $group_name_text,
                 'groups'        => $groups_arr,
+                'custom_fields' => $custom_labels_arr,
                 'member_number' => isset($d['member_number'])?$d['member_number']:'',
+                'custom_pairs'  => $custom_pairs_arr,
+                'custom_labels' => $custom_labels_arr,
             );
         }
 
-        wp_send_json_success(array('rows'=>$rows,'groups'=>$groups));
+        $custom_filters = [];
+        $custom_option_conditions = [];
+        if ($custom_restrict){
+            foreach ($custom_field_map as $field_id => $hashes){
+                $field_sql = esc_sql($field_id);
+                $hash_sql = implode("','", array_map('esc_sql', $hashes));
+                $custom_option_conditions[] = "(cv.field_id = '{$field_sql}' AND cv.value_hash IN ('{$hash_sql}'))";
+            }
+        }
+        $custom_where_sql = '';
+        if (!empty($custom_option_conditions)){
+            $custom_where_sql = 'WHERE '.implode(' OR ', $custom_option_conditions);
+        }
+        $custom_results = $wpdb->get_results(
+            "SELECT cv.field_id,
+                    cv.value_hash,
+                    cv.value_label,
+                    COALESCE(NULLIF(cf.name,''), cv.field_label, cv.field_id) AS field_label
+             FROM {$cv_table} cv
+             LEFT JOIN {$cf_table} cf ON cf.field_id = cv.field_id
+             {$custom_where_sql}
+             ORDER BY field_label ASC, value_label ASC",
+            ARRAY_A
+        );
+        foreach ((array)$custom_results as $row){
+            $field_id = isset($row['field_id']) ? strtolower((string)$row['field_id']) : '';
+            $value_hash = isset($row['value_hash']) ? strtolower((string)$row['value_hash']) : '';
+            if ($field_id === '' || strlen($value_hash) !== 32){
+                continue;
+            }
+            $field_label = isset($row['field_label']) && $row['field_label'] !== '' ? $row['field_label'] : $field_id;
+            $value_label = isset($row['value_label']) && $row['value_label'] !== '' ? $row['value_label'] : $value_hash;
+            $token = $field_id.'|'.$value_hash;
+            $custom_filters[$token] = $field_label.' – '.$value_label;
+        }
+
+        wp_send_json_success(array(
+            'rows'            => $rows,
+            'groups'          => $groups,
+            'custom_filters'  => $custom_filters
+        ));
     }
 
     private function resolve_columns($columns_attr){

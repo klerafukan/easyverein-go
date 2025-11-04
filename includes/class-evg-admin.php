@@ -65,8 +65,8 @@ class EVG_Admin {
                     <tr><th>Groups Path</th><td><input type="text" name="evg_groups_path" class="regular-text" placeholder="/api/v2.0/member-group" value="<?php echo esc_attr(get_option('evg_groups_path','/api/v2.0/member-group')); ?>"></td></tr>
                     <tr><th>Members Path</th><td><input type="text" name="evg_members_path" class="regular-text" placeholder="/api/v2.0/member" value="<?php echo esc_attr(get_option('evg_members_path','/api/v2.0/member')); ?>"></td></tr>
                     <tr><th>Contact-Details Path</th><td><input type="text" name="evg_contact_details_path" class="regular-text" placeholder="/api/v2.0/contact-details/{id}" value="<?php echo esc_attr(get_option('evg_contact_details_path','/api/v2.0/contact-details/{id}')); ?>"></td></tr>
-                    <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v2.0/custom-field?kind=E&amp;limit=100" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100')); ?>"></td></tr>
-                    <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v2.0/member/{id}/custom-fields?limit=100" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields?limit=100')); ?>"></td></tr>
+                    <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v2.0/custom-field" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v2.0/custom-field')); ?>"></td></tr>
+                    <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v2.0/member/{id}/custom-fields" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields')); ?>"></td></tr>
                     <tr><th>Member→Groups Path</th><td><input type="text" name="evg_member_groups_path" class="regular-text" placeholder="/api/v2.0/member/{id}/groups" value="<?php echo esc_attr(get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups')); ?>"></td></tr>
                     <tr><th>Debug</th><td><label><input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',1)); ?>> aktivieren</label></td></tr>
                 </table>
@@ -124,6 +124,7 @@ class EVG_Admin {
             const nightlyPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'))); ?>';
             const nightlyPrefix = nightlyPrefixRaw || 'evg_nightly';
             let currentPrefix = 'evg';
+            let jobFinished = false;
             function push(line){ const ts=new Date().toLocaleTimeString(); log.textContent='['+ts+'] '+line+'\n'+log.textContent; }
             function setP(p,txt){ if(p<0)p=0;if(p>100)p=100; bar.style.width=p.toFixed(1)+'%'; if(txt) push(txt+' ('+p.toFixed(1)+'%)'); }
 
@@ -135,12 +136,20 @@ class EVG_Admin {
                     if(r&&r.success){
                         const d=r.data||{};
                         setP(d.percent||0, d.label||'…');
-                        if(!d.done) setTimeout(tick,tickPause);
+                        if(d.done){
+                            if(!jobFinished){
+                                jobFinished = true;
+                                push('Job abgeschlossen ['+currentPrefix+']');
+                            }
+                        } else {
+                            setTimeout(tick,tickPause);
+                        }
                     }
                 });
             }
             function startSync(prefix,cap){
                 currentPrefix = (prefix && prefix.length) ? prefix : 'evg';
+                jobFinished = false;
                 const payload = {action:'evg_sync_start',_wpnonce:n1,prefix:currentPrefix};
                 if(cap){ payload.cap = cap; }
                 jQuery.post(ajax,payload,function(r){
@@ -192,6 +201,25 @@ class EVG_Admin {
             elseif (is_string($one)) $selected_ids[] = $one;
         }
         $allow_all = (int) get_user_meta($user->ID, 'evg_groups_all', true);
+
+        $cv_table = $wpdb->prefix.'evg_custom_field_values';
+        $cf_table = $wpdb->prefix.'evg_custom_fields';
+        $custom_rows = $wpdb->get_results(
+            "SELECT cv.field_id,
+                    cv.value_hash,
+                    cv.value_label,
+                    COALESCE(NULLIF(cf.name,''), cv.field_label, cv.field_id) AS field_label
+             FROM {$cv_table} cv
+             LEFT JOIN {$cf_table} cf ON cf.field_id = cv.field_id
+             ORDER BY field_label ASC, value_label ASC",
+            ARRAY_A
+        );
+        $custom_allow_all = (int) get_user_meta($user->ID, 'evg_custom_filters_all', true);
+        $custom_selected = get_user_meta($user->ID, 'evg_custom_filters', true);
+        if (!is_array($custom_selected)) {
+            $custom_selected = [];
+        }
+        $custom_selected = array_map('strval', $custom_selected);
         ?>
         <h2><?php esc_html_e('EasyVerein Gruppen-Zuordnung','ev-groups'); ?></h2>
         <table class="form-table">
@@ -248,6 +276,45 @@ class EVG_Admin {
                             </table>
                         </div>
                     </div>
+                    <p class="description"><?php esc_html_e('Ausgewählte Gruppen bestimmen, welche Datensätze der Nutzer im Frontend sieht. Ohne Auswahl gelten alle Gruppen.','ev-groups'); ?></p>
+                </td>
+            </tr>
+            <tr>
+                <th><?php esc_html_e('Sichtbare Custom-Field-Werte','ev-groups'); ?></th>
+                <td>
+                    <label>
+                        <input type="checkbox" name="evg_cf_all" value="1" <?php checked(1, $custom_allow_all); ?>>
+                        <?php esc_html_e('Alle Custom-Field-Werte erlauben','ev-groups'); ?>
+                    </label>
+                    <?php if (!empty($custom_rows)) : ?>
+                        <p>
+                            <select name="evg_cf_selected[]" class="large-text" multiple size="8">
+                                <?php
+                                $custom_seen = [];
+                                foreach ($custom_rows as $row):
+                                    $field_id = isset($row['field_id']) ? (string)$row['field_id'] : '';
+                                    $value_hash = isset($row['value_hash']) ? strtolower((string)$row['value_hash']) : '';
+                                    if ($field_id === '' || $value_hash === '') {
+                                        continue;
+                                    }
+                                    $token = strtolower($field_id).'|'.$value_hash;
+                                    if (isset($custom_seen[$token])) {
+                                        continue;
+                                    }
+                                    $custom_seen[$token] = true;
+                                    $field_label = isset($row['field_label']) && $row['field_label'] !== '' ? $row['field_label'] : $field_id;
+                                    $value_label = isset($row['value_label']) && $row['value_label'] !== '' ? $row['value_label'] : $value_hash;
+                                    ?>
+                                    <option value="<?php echo esc_attr($token); ?>" <?php selected(in_array($token, $custom_selected, true)); ?>>
+                                        <?php echo esc_html($field_label.' – '.$value_label); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </p>
+                    <?php else : ?>
+                        <p class="description"><?php esc_html_e('Keine Custom-Field-Werte gefunden. Bitte starte zuerst einen Sync.','ev-groups'); ?></p>
+                    <?php endif; ?>
+                    <p class="description"><?php esc_html_e('Optional lassen sich hier Custom-Field-Werte auswählen, die ein Benutzer sehen darf. Ohne Auswahl gelten alle Werte.','ev-groups'); ?></p>
                 </td>
             </tr>
         </table>
@@ -265,6 +332,26 @@ class EVG_Admin {
             if ($gid !== '') $clean_ids[] = $gid;
         }
         update_user_meta($user_id, 'evg_groups', $clean_ids);
+
+        $allow_all_custom = isset($_POST['evg_cf_all']) ? 1 : 0;
+        update_user_meta($user_id, 'evg_custom_filters_all', $allow_all_custom);
+        $selected_tokens = [];
+        if (!$allow_all_custom && isset($_POST['evg_cf_selected']) && is_array($_POST['evg_cf_selected'])){
+            foreach ($_POST['evg_cf_selected'] as $token){
+                $token = sanitize_text_field($token);
+                if (strpos($token, '|') === false) {
+                    continue;
+                }
+                list($field_part, $hash_part) = explode('|', $token, 2);
+                $field_part = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$field_part);
+                $hash_part = strtolower(preg_replace('/[^a-f0-9]/i', '', (string)$hash_part));
+                if ($field_part === '' || strlen($hash_part) !== 32) {
+                    continue;
+                }
+                $selected_tokens[] = strtolower($field_part).'|'.$hash_part;
+            }
+        }
+        update_user_meta($user_id, 'evg_custom_filters', $allow_all_custom ? [] : array_values(array_unique($selected_tokens)));
     }
 
     public function ajax_test_connection(){

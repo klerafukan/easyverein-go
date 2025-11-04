@@ -2,13 +2,13 @@
 /**
  * Plugin Name: Easyverein Go
  * Description: Mitglieder-Sync + lokales Frontend. Speichert und nutzt den contact-details Link pro Mitglied. Benutzerbezogene Gruppenfreigabe.
- * Version: 2.2.0
+ * Version: 3.0.0
  * Author: Tilmann Laux
  * Text Domain: ev-groups
  */
 if (!defined('ABSPATH')) { exit; }
 
-define('EVG_VERSION','2.2.0');
+define('EVG_VERSION','3.0.0');
 define('EVG_SLUG','easyverein-go');
 define('EVG_PATH', plugin_dir_path(__FILE__));
 define('EVG_URL', plugin_dir_url(__FILE__));
@@ -22,7 +22,10 @@ class EVG_Plugin {
     private const CRON_HOOK = 'evg_nightly_sync';
     private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
+    private static $instance = null;
+
     public function __construct(){
+        self::$instance = $this;
         register_activation_hook(__FILE__,[$this,'on_activate']);
         register_deactivation_hook(__FILE__,[$this,'on_deactivate']);
         add_action('plugins_loaded',[$this,'init']);
@@ -38,8 +41,8 @@ class EVG_Plugin {
             'evg_members_path' => '/api/v2.0/member',
             'evg_contact_details_path' => '/api/v2.0/contact-details/{id}',
             'evg_member_groups_path'   => '/api/v2.0/member/{id}/groups',
-            'evg_custom_fields_path'   => '/api/v2.0/custom-field?kind=E&limit=100',
-            'evg_member_custom_fields_path' => '/api/v2.0/member/{id}/custom-fields?limit=100',
+            'evg_custom_fields_path'   => '/api/v2.0/custom-field',
+            'evg_member_custom_fields_path' => '/api/v2.0/member/{id}/custom-fields',
             'evg_columns'      => ['first_name','family_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','groups'],
             'evg_debug'        => 1,
             'evg_sync_next_pages_max' => 100,
@@ -60,145 +63,140 @@ class EVG_Plugin {
         $this->clear_cron();
     }
     private function ensure_runtime_option_defaults(){
-        $runtime_defaults = [
-            'evg_custom_fields_path'           => '/api/v2.0/custom-field?kind=E&limit=100',
-            'evg_member_custom_fields_path'   => '/api/v2.0/member/{id}/custom-fields?limit=100',
+        $defaults = [
+            'evg_custom_fields_path'         => '/api/v2.0/custom-field',
+            'evg_member_custom_fields_path'  => '/api/v2.0/member/{id}/custom-fields',
         ];
-        foreach($runtime_defaults as $key => $value){
-            if (null === get_option($key, null)){
+        foreach ($defaults as $key => $value) {
+            $current = get_option($key, null);
+            if ($current === null || $current === '') {
                 update_option($key, $value);
+                continue;
+            }
+            if (!is_string($current)) {
+                update_option($key, $value);
+                continue;
+            }
+            $normalized = $current;
+            if (strpos($normalized, 'custom-field?kind=E') !== false) {
+                $normalized = '/api/v2.0/custom-field';
+            }
+            if (strpos($normalized, 'custom-fields?limit=100') !== false) {
+                $normalized = '/api/v2.0/member/{id}/custom-fields';
+            }
+            if (strpos($normalized, 'https://easyverein.com/api/v2.0/custom-field') === 0) {
+                $normalized = '/api/v2.0/custom-field';
+            }
+            if (strpos($normalized, 'https://easyverein.com/api/v2.0/member/') === 0) {
+                $normalized = '/api/v2.0/member/{id}/custom-fields';
+            }
+            if ($normalized !== $current) {
+                update_option($key, $normalized);
             }
         }
     }
+
     private function table_name_for_prefix($prefix,$suffix){
         global $wpdb;
         return $wpdb->prefix.EVG_Sync::sanitize_table_prefix($prefix).'_'.$suffix;
     }
-    private function create_tables(){
-        $this->create_tables_for_prefix('evg');
-    }
-    private function create_tables_for_prefix($prefix){
+
+    private function get_schema_statements($prefix){
         global $wpdb; require_once ABSPATH.'wp-admin/includes/upgrade.php';
-        $c = $wpdb->get_charset_collate();
-        $g  = $this->table_name_for_prefix($prefix,'groups');
-        $m  = $this->table_name_for_prefix($prefix,'members');
-        $x  = $this->table_name_for_prefix($prefix,'member_groups');
-        $cf = $this->table_name_for_prefix($prefix,'custom_fields');
-        $mv = $this->table_name_for_prefix($prefix,'member_custom_fields');
-        $wpdb->query("CREATE TABLE IF NOT EXISTS $g (
-            group_id varchar(191) PRIMARY KEY,
-            name varchar(255) DEFAULT '',
-            short varchar(120) DEFAULT '',
-            updated_at datetime NULL,
-            raw longtext
-        ) $c;");
-        $wpdb->query("CREATE TABLE IF NOT EXISTS $m (
-            member_id varchar(191) PRIMARY KEY,
-            member_number varchar(64) DEFAULT '',
-            contact_details varchar(255) DEFAULT '',
-            first_name varchar(120) DEFAULT '',
-            family_name varchar(120) DEFAULT '',
-            date_of_birth date DEFAULT NULL,
-            age int DEFAULT NULL,
-            birth_year int DEFAULT NULL,
-            gender varchar(32) DEFAULT '',
-            email_private varchar(190) DEFAULT '',
-            phone varchar(120) DEFAULT '',
-            zip varchar(20) DEFAULT '',
-            city varchar(120) DEFAULT '',
-            street varchar(190) DEFAULT '',
-            address_suffix varchar(190) DEFAULT '',
-            updated_at datetime NULL,
-            raw longtext,
-            KEY idx_member_number (member_number)
-        ) $c;");
-        $wpdb->query("CREATE TABLE IF NOT EXISTS $x (
-            member_id varchar(191) NOT NULL,
-            group_id varchar(191) NOT NULL,
-            member_name varchar(255) DEFAULT '',
-            group_name varchar(255) DEFAULT '',
-            assigned_at datetime NULL,
-            PRIMARY KEY (member_id, group_id),
-            KEY idx_group (group_id)
-        ) $c;");
-        $wpdb->query("CREATE TABLE IF NOT EXISTS $cf (
-            field_id varchar(191) PRIMARY KEY,
-            name varchar(255) DEFAULT '',
-            settings_type varchar(32) DEFAULT '',
-            kind varchar(32) DEFAULT '',
-            member_show tinyint(1) DEFAULT 0,
-            member_edit tinyint(1) DEFAULT 0,
-            position int DEFAULT 0,
-            collection varchar(64) DEFAULT '',
-            updated_at datetime NULL,
-            raw longtext
-        ) $c;");
-        $wpdb->query("CREATE TABLE IF NOT EXISTS $mv (
-            member_id varchar(191) NOT NULL,
-            field_id varchar(191) NOT NULL,
-            value_text longtext,
-            updated_at datetime NULL,
-            raw longtext,
-            PRIMARY KEY (member_id, field_id),
-            KEY idx_field (field_id)
-        ) $c;");
+        $prefix = EVG_Sync::sanitize_table_prefix($prefix);
+        $base = $wpdb->prefix.$prefix.'_';
+        $charset = $wpdb->get_charset_collate();
+
+        return [
+            "CREATE TABLE {$base}groups (
+                group_id varchar(191) NOT NULL,
+                name varchar(255) DEFAULT '',
+                short varchar(120) DEFAULT '',
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (group_id),
+                KEY idx_name (name(191))
+            ) {$charset};",
+            "CREATE TABLE {$base}members (
+                member_id varchar(191) NOT NULL,
+                member_number varchar(64) DEFAULT '',
+                contact_details varchar(255) DEFAULT '',
+                first_name varchar(120) DEFAULT '',
+                family_name varchar(120) DEFAULT '',
+                date_of_birth date DEFAULT NULL,
+                age int DEFAULT NULL,
+                birth_year int DEFAULT NULL,
+                gender varchar(32) DEFAULT '',
+                email_private varchar(190) DEFAULT '',
+                phone varchar(120) DEFAULT '',
+                zip varchar(20) DEFAULT '',
+                city varchar(120) DEFAULT '',
+                street varchar(190) DEFAULT '',
+                address_suffix varchar(190) DEFAULT '',
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (member_id),
+                KEY idx_member_number (member_number)
+            ) {$charset};",
+            "CREATE TABLE {$base}member_groups (
+                member_id varchar(191) NOT NULL,
+                group_id varchar(191) NOT NULL,
+                member_name varchar(255) DEFAULT '',
+                group_name varchar(255) DEFAULT '',
+                assigned_at datetime NULL,
+                PRIMARY KEY  (member_id,group_id),
+                KEY idx_group (group_id),
+                KEY idx_member_name (member_name(191)),
+                KEY idx_group_name (group_name(191))
+            ) {$charset};",
+            "CREATE TABLE {$base}custom_fields (
+                field_id varchar(191) NOT NULL,
+                name varchar(255) DEFAULT '',
+                settings_type varchar(32) DEFAULT '',
+                kind varchar(32) DEFAULT '',
+                member_show tinyint(1) DEFAULT 0,
+                member_edit tinyint(1) DEFAULT 0,
+                position int DEFAULT 0,
+                collection varchar(191) DEFAULT '',
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (field_id)
+            ) {$charset};",
+            "CREATE TABLE {$base}member_custom_fields (
+                member_id varchar(191) NOT NULL,
+                field_id varchar(191) NOT NULL,
+                value_hash varchar(64) DEFAULT '',
+                value_text longtext,
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (member_id,field_id),
+                KEY idx_field (field_id),
+                KEY idx_value_hash (value_hash)
+            ) {$charset};",
+            "CREATE TABLE {$base}custom_field_values (
+                field_id varchar(191) NOT NULL,
+                value_hash varchar(64) NOT NULL,
+                field_label varchar(255) DEFAULT '',
+                value_label varchar(255) DEFAULT '',
+                value_raw longtext,
+                updated_at datetime NULL,
+                PRIMARY KEY  (field_id, value_hash),
+                KEY idx_field_label (field_id, value_label)
+            ) {$charset};"
+        ];
     }
-    private function maybe_migrate_add_contact_details($prefix='evg'){
-        global $wpdb; $table=$this->table_name_for_prefix($prefix,'members');
-        $col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='contact_details'", DB_NAME, $table ));
-        if (!$col) { $wpdb->query("ALTER TABLE {$table} ADD COLUMN contact_details varchar(255) DEFAULT '' AFTER member_number"); }
-    }
-    private function maybe_migrate_add_speaking_columns($prefix='evg'){
-        global $wpdb; $table=$this->table_name_for_prefix($prefix,'member_groups');
-        $member_name_col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='member_name'", DB_NAME, $table ));
-        $group_name_col = $wpdb->get_var($wpdb->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='group_name'", DB_NAME, $table ));
-        
-        if (!$member_name_col) { 
-            $wpdb->query("ALTER TABLE {$table} ADD COLUMN member_name varchar(255) DEFAULT '' AFTER group_id"); 
-        }
-        if (!$group_name_col) { 
-            $wpdb->query("ALTER TABLE {$table} ADD COLUMN group_name varchar(255) DEFAULT '' AFTER member_name"); 
-        }
-        
-        // Add indexes if they don't exist
-        $has_idx_member = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s",
-            DB_NAME, $table, 'idx_member_name'
-        ));
-        if (!$has_idx_member) {
-            $wpdb->query("ALTER TABLE {$table} ADD INDEX idx_member_name (member_name)");
-        }
-        $has_idx_group = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(1) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s",
-            DB_NAME, $table, 'idx_group_name'
-        ));
-        if (!$has_idx_group) {
-            $wpdb->query("ALTER TABLE {$table} ADD INDEX idx_group_name (group_name)");
-        }
-    }
-    private function maybe_migrate_add_extended_member_fields($prefix='evg'){
-        global $wpdb;
-        $table = $this->table_name_for_prefix($prefix,'members');
-        $columns = $wpdb->get_col($wpdb->prepare(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s",
-            DB_NAME, $table
-        ));
-        $columns = array_map('strtolower', (array)$columns);
-        if (!in_array('birth_year', $columns, true)) {
-            $wpdb->query("ALTER TABLE {$table} ADD COLUMN birth_year int DEFAULT NULL AFTER age");
-        }
-        if (!in_array('gender', $columns, true)) {
-            $wpdb->query("ALTER TABLE {$table} ADD COLUMN gender varchar(32) DEFAULT '' AFTER birth_year");
-        }
-        if (!in_array('phone', $columns, true)) {
-            $wpdb->query("ALTER TABLE {$table} ADD COLUMN phone varchar(120) DEFAULT '' AFTER email_private");
-        }
-    }
+
     private function ensure_tables_for_prefix($prefix){
-        $this->create_tables_for_prefix($prefix);
-        $this->maybe_migrate_add_contact_details($prefix);
-        $this->maybe_migrate_add_speaking_columns($prefix);
-        $this->maybe_migrate_add_extended_member_fields($prefix);
+        global $wpdb; require_once ABSPATH.'wp-admin/includes/upgrade.php';
+        foreach ($this->get_schema_statements($prefix) as $statement) {
+            dbDelta($statement);
+        }
+    }
+
+    public static function ensure_schema_for_prefix($prefix){
+        if (self::$instance instanceof self){
+            self::$instance->ensure_tables_for_prefix($prefix);
+        }
     }
     public function init(){
         $this->ensure_tables_for_prefix('evg');
@@ -212,30 +210,38 @@ class EVG_Plugin {
 
     private function collect_sync_db_counts($prefix='evg'){
         global $wpdb;
-        $defaults=[
-            'groups'=>0,
-            'members'=>0,
-            'members_with_contact'=>0,
-            'member_groups'=>0,
-            'custom_fields'=>0,
-            'member_custom_fields'=>0,
+        $counts = [
+            'groups'               => 0,
+            'members'              => 0,
+            'members_with_contact' => 0,
+            'member_groups'        => 0,
+            'custom_fields'        => 0,
+            'member_custom_fields' => 0,
+            'custom_field_values'  => 0,
         ];
         if(!isset($wpdb) || !is_object($wpdb)){
-            return $defaults;
+            return $counts;
         }
-        $prefix=EVG_Sync::sanitize_table_prefix($prefix);
-        $g_table=$this->table_name_for_prefix($prefix,'groups');
-        $m_table=$this->table_name_for_prefix($prefix,'members');
-        $x_table=$this->table_name_for_prefix($prefix,'member_groups');
-        $cf_table=$this->table_name_for_prefix($prefix,'custom_fields');
-        $mv_table=$this->table_name_for_prefix($prefix,'member_custom_fields');
-        $defaults['groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$g_table}");
-        $defaults['members']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table}");
-        $defaults['members_with_contact']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table} WHERE contact_details IS NOT NULL AND contact_details <> ''");
-        $defaults['member_groups']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$x_table}");
-        $defaults['custom_fields']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$cf_table}");
-        $defaults['member_custom_fields']=(int)$wpdb->get_var("SELECT COUNT(*) FROM {$mv_table}");
-        return $defaults;
+
+        $prefix = EVG_Sync::sanitize_table_prefix($prefix);
+        $table_map = [
+            'groups'               => 'groups',
+            'members'              => 'members',
+            'member_groups'        => 'member_groups',
+            'custom_fields'        => 'custom_fields',
+            'member_custom_fields' => 'member_custom_fields',
+            'custom_field_values'  => 'custom_field_values',
+        ];
+
+        foreach ($table_map as $key => $suffix){
+            $table = $this->table_name_for_prefix($prefix, $suffix);
+            $counts[$key] = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+        }
+
+        $members_table = $this->table_name_for_prefix($prefix, 'members');
+        $counts['members_with_contact'] = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$members_table} WHERE contact_details IS NOT NULL AND contact_details <> ''");
+
+        return $counts;
     }
 
     private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array(),$table_prefix='evg'){
@@ -269,13 +275,14 @@ class EVG_Plugin {
         $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
         $lines[]='- Custom Fields: '.(int)$db_counts['custom_fields'];
         $lines[]='- Custom-Field-Werte: '.(int)$db_counts['member_custom_fields'];
+        $lines[]='- Custom-Field-Optionen: '.(int)$db_counts['custom_field_values'];
         if(EVG_Sync::sanitize_table_prefix($table_prefix)!=='evg'){
             $lines[]='';
             $lines[]='Hinweis: Dieser Lauf schrieb in Tabellen mit Präfix „'.EVG_Sync::sanitize_table_prefix($table_prefix).'“.';
         }
 
         $state_sum=0;
-        foreach(['groups','custom_fields','members_list','details','member_custom_fields','member_groups'] as $sk){
+        foreach(['groups','custom_fields','custom_field_values','members_list','details','member_custom_fields','member_groups'] as $sk){
             $state_sum+=isset($state_counts[$sk]) ? (int)$state_counts[$sk] : 0;
         }
         if($state_sum>0){
@@ -283,6 +290,7 @@ class EVG_Plugin {
             $lines[]='API-Zaehler (Rohdaten):';
             $lines[]='- Gruppen abgeholt: '.(int)$state_counts['groups'];
             $lines[]='- Custom Fields geladen: '.(int)$state_counts['custom_fields'];
+            $lines[]='- Custom-Field-Optionen gespeichert: '.(int)$state_counts['custom_field_values'];
             $lines[]='- Mitglieder gelistet: '.(int)$state_counts['members_list'];
             $lines[]='- Kontakt-Details geladen: '.(int)$state_counts['details'];
             $lines[]='- Custom-Field-Werte importiert: '.(int)$state_counts['member_custom_fields'];
@@ -421,6 +429,7 @@ class EVG_Plugin {
         $state_counts=[
             'groups'=>isset($state_final['counts']['groups']) ? (int)$state_final['counts']['groups'] : 0,
             'custom_fields'=>isset($state_final['counts']['custom_fields']) ? (int)$state_final['counts']['custom_fields'] : 0,
+            'custom_field_values'=>isset($state_final['counts']['custom_field_values']) ? (int)$state_final['counts']['custom_field_values'] : 0,
             'members_list'=>isset($state_final['counts']['members_list']) ? (int)$state_final['counts']['members_list'] : 0,
             'details'=>isset($state_final['counts']['details']) ? (int)$state_final['counts']['details'] : 0,
             'member_custom_fields'=>isset($state_final['counts']['member_custom_fields']) ? (int)$state_final['counts']['member_custom_fields'] : 0,

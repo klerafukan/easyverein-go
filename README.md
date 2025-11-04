@@ -1,6 +1,6 @@
 # Easyverein Go
 
-Aktuelle Plugin-Version: **2.2.0**
+Aktuelle Plugin-Version: **3.0.0**
 
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
@@ -19,6 +19,8 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
 
 - **Benutzerbezogene Gruppenfreigabe**  
   Admins können im Benutzerprofil pro WordPress-User festlegen, ob alle Gruppen sichtbar sind oder nur eine manuell ausgewählte Teilmenge. Die Auswahl erfolgt in einer komfortablen Tabelle direkt im Profil; die Einstellungen wirken sich auf Frontend-Filter und Datenreduzierung aus.
+- **Custom-Field-Filter pro Benutzer**  
+  Zusätzlich zu Gruppen lassen sich nun individuelle Custom-Field-Werte je WordPress-Benutzer freischalten. Im Profil werden alle synchronisierten Feld/Wert-Kombinationen angeboten – die Auswahl bestimmt, welche Merkmalsfilter im Frontend sichtbar sind und welche Datensätze der Benutzer sehen darf.
 
 - **Admin-Einstellungen**  
   Konfigurierbare API-Parameter (URL, Key, Endpoints) und Sync-Limits (Rate, Calls pro Tick, Seitenlimit, „nur Mitglieder ohne Gruppen“).  

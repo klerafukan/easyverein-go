@@ -38,7 +38,8 @@ foreach ($table_prefixes as $label => $prefix) {
         $wpdb->prefix . $prefix . '_members',
         $wpdb->prefix . $prefix . '_member_groups',
         $wpdb->prefix . $prefix . '_custom_fields',
-        $wpdb->prefix . $prefix . '_member_custom_fields'
+        $wpdb->prefix . $prefix . '_member_custom_fields',
+        $wpdb->prefix . $prefix . '_custom_field_values'
     ];
     foreach ($tables as $table) {
         $exists = $wpdb->get_var("SHOW TABLES LIKE '$table'");

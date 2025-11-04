@@ -29,6 +29,216 @@ class EVG_Sync {
         return $wpdb->prefix.$this->table_prefix.'_'.$suffix;
     }
 
+    private function ensure_custom_field_schema(){
+        if (class_exists('EVG_Plugin')) {
+            EVG_Plugin::ensure_schema_for_prefix($this->table_prefix);
+            return;
+        }
+
+        global $wpdb; require_once ABSPATH.'wp-admin/includes/upgrade.php';
+        $prefix = self::sanitize_table_prefix($this->table_prefix);
+        $base = $wpdb->prefix.$prefix.'_' ;
+        $charset = $wpdb->get_charset_collate();
+        $schemas = [
+            "CREATE TABLE {$base}custom_fields (
+                field_id varchar(191) NOT NULL,
+                name varchar(255) DEFAULT '',
+                settings_type varchar(32) DEFAULT '',
+                kind varchar(32) DEFAULT '',
+                member_show tinyint(1) DEFAULT 0,
+                member_edit tinyint(1) DEFAULT 0,
+                position int DEFAULT 0,
+                collection varchar(191) DEFAULT '',
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (field_id)
+            ) {$charset};",
+            "CREATE TABLE {$base}member_custom_fields (
+                member_id varchar(191) NOT NULL,
+                field_id varchar(191) NOT NULL,
+                value_hash varchar(64) DEFAULT '',
+                value_text longtext,
+                updated_at datetime NULL,
+                raw longtext,
+                PRIMARY KEY  (member_id,field_id),
+                KEY idx_field (field_id),
+                KEY idx_value_hash (value_hash)
+            ) {$charset};",
+            "CREATE TABLE {$base}custom_field_values (
+                field_id varchar(191) NOT NULL,
+                value_hash varchar(64) NOT NULL,
+                field_label varchar(255) DEFAULT '',
+                value_label varchar(255) DEFAULT '',
+                value_raw longtext,
+                updated_at datetime NULL,
+                PRIMARY KEY  (field_id, value_hash),
+                KEY idx_field_label (field_id, value_label)
+            ) {$charset};"
+        ];
+        foreach ($schemas as $sql){
+            dbDelta($sql);
+        }
+    }
+
+    private function is_indexed_array($value){
+        if (!is_array($value)){
+            return false;
+        }
+        if ($value === []){
+            return true;
+        }
+        return array_keys($value) === range(0, count($value) - 1);
+    }
+
+    private function extract_items_from_payload($payload){
+        if ($this->is_indexed_array($payload)){
+            return $payload;
+        }
+        if (!is_array($payload)){
+            return [];
+        }
+        $candidates = ['results','data','items','entries','list','objects'];
+        foreach ($candidates as $key){
+            if (isset($payload[$key])){
+                $candidate = $payload[$key];
+                if ($this->is_indexed_array($candidate)){
+                    return $candidate;
+                }
+                if (is_array($candidate)){
+                    $nested = $this->extract_items_from_payload($candidate);
+                    if (!empty($nested)){
+                        return $nested;
+                    }
+                }
+            }
+        }
+        return [];
+    }
+
+    private function extract_next_from_payload($payload){
+        if (!is_array($payload)){
+            return null;
+        }
+        $direct_keys = ['next','nextLink','next_page','next_page_url'];
+        foreach ($direct_keys as $key){
+            if (!empty($payload[$key])){
+                if (is_string($payload[$key])){
+                    return $payload[$key];
+                }
+                if (is_array($payload[$key]) && !empty($payload[$key]['href']) && is_string($payload[$key]['href'])){
+                    return $payload[$key]['href'];
+                }
+            }
+        }
+        $nested_sources = ['links','pagination'];
+        foreach ($nested_sources as $source){
+            if (isset($payload[$source]) && is_array($payload[$source])){
+                foreach ($direct_keys as $key){
+                    if (!empty($payload[$source][$key])){
+                        $candidate = $payload[$source][$key];
+                        if (is_string($candidate)){
+                            return $candidate;
+                        }
+                        if (is_array($candidate) && !empty($candidate['href']) && is_string($candidate['href'])){
+                            return $candidate['href'];
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private function flatten_custom_field_value($value){
+        $result = [];
+        $walker = function($item) use (&$result, &$walker){
+            if (is_null($item)){
+                return;
+            }
+            if (is_scalar($item)){
+                $string = trim((string)$item);
+                if ($string !== ''){
+                    $result[] = $string;
+                }
+                return;
+            }
+            if (is_array($item)){
+                foreach ($item as $sub){
+                    $walker($sub);
+                }
+                return;
+            }
+            if (is_object($item)){
+                foreach (get_object_vars($item) as $sub){
+                    $walker($sub);
+                }
+            }
+        };
+        $walker($value);
+        return $result;
+    }
+
+    private function normalize_custom_field_values(array $values){
+        $normalized = [];
+        foreach ($values as $value){
+            $value = preg_replace('/\s+/u',' ', trim((string)$value));
+            if ($value === ''){
+                continue;
+            }
+            $normalized[] = $value;
+        }
+        $normalized = array_values(array_unique($normalized));
+        if (count($normalized) > 1){
+            if (function_exists('mb_strtolower')){
+                usort($normalized, function($a,$b){
+                    return strcasecmp($a, $b);
+                });
+            } else {
+                sort($normalized, SORT_NATURAL | SORT_FLAG_CASE);
+            }
+        }
+        return $normalized;
+    }
+
+    private function prepare_custom_field_value($field_id, $value_source){
+        $raw_string = '';
+        $value_candidates = [];
+
+        if (is_array($value_source) || is_object($value_source)){
+            $raw_string = wp_json_encode($value_source, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $value_candidates = $this->flatten_custom_field_value($value_source);
+        } else {
+            $raw_string = trim((string)$value_source);
+            if ($raw_string !== ''){
+                $decoded = json_decode($raw_string, true);
+                if (json_last_error() === JSON_ERROR_NONE && (is_array($decoded) || is_object($decoded)) ){
+                    $value_candidates = $this->flatten_custom_field_value($decoded);
+                } else {
+                    $value_candidates = [$raw_string];
+                }
+            }
+        }
+
+        $normalized_values = $this->normalize_custom_field_values($value_candidates);
+        if (empty($normalized_values)){
+            $fallback = preg_replace('/\s+/u',' ', trim($raw_string));
+            if ($fallback === ''){
+                return null;
+            }
+            $normalized_values = [$fallback];
+        }
+
+        $label = implode(', ', $normalized_values);
+        $hash_input = function_exists('mb_strtolower') ? mb_strtolower($label, 'UTF-8') : strtolower($label);
+        $hash = md5($field_id.'|'.$hash_input);
+
+        return [
+            'label' => $label,
+            'hash'  => $hash,
+            'raw'   => $raw_string
+        ];
+    }
+
     private function headers(){
         $key=get_option('evg_api_key',''); $hdr=get_option('evg_auth_header','Authorization Bearer');
         $h=['Accept'=>'application/json']; if($hdr==='Authorization Bearer') $h['Authorization']='Bearer '.$key; else $h['X-API-Key']=$key; return $h;
@@ -39,6 +249,23 @@ class EVG_Sync {
         if(preg_match('#^https?://#i',$next)) return $next;
         $b=$this->base(); return rtrim($b,'/').(strpos($next,'/')===0?$next:'/'.$next);
     }
+    private function normalize_endpoint($path){
+        $path = trim((string)$path);
+        if ($path === '') {
+            return '';
+        }
+        if (preg_match('#^https?://#i', $path)) {
+            return $path;
+        }
+        $base = $this->base();
+        if ($base === '') {
+            return $path;
+        }
+        if ($path !== '' && $path[0] !== '/') {
+            $path = '/'.$path;
+        }
+        return $base.$path;
+    }
     private function calls_per_tick(){ return max(1,(int)get_option('evg_sync_calls_per_tick',5)); }
     private function pages_max(){ return max(1,(int)get_option('evg_sync_next_pages_max',100)); }
     private function rate_sleep(){ $r=max(1,(int)get_option('evg_sync_rate_per_sec',5)); usleep((int)(1000000 / max(1,$r))); }
@@ -48,11 +275,13 @@ class EVG_Sync {
 
     public function job_start($cap=0){
         global $wpdb;
+        $this->ensure_custom_field_schema();
         $wpdb->query('TRUNCATE TABLE '.$this->table('member_groups'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('members'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('groups'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('custom_fields'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('member_custom_fields'));
+        $wpdb->query('TRUNCATE TABLE '.$this->table('custom_field_values'));
         $skip = (int) get_option('evg_sync_skip_groups', 0 );
         $state=[
             'phase'=>'groups',
@@ -61,6 +290,7 @@ class EVG_Sync {
             'counts'=>[
                 'groups'=>0,
                 'custom_fields'=>0,
+                'custom_field_values'=>0,
                 'members_list'=>0,
                 'details'=>0,
                 'member_custom_fields'=>0,
@@ -69,18 +299,21 @@ class EVG_Sync {
             'est'=>[
                 'groups'=>1,
                 'custom_fields'=>1,
+                'custom_field_values'=>1,
                 'members_list'=>1,
                 'details'=>0,
                 'member_custom_fields'=>1,
                 'member_groups'=>($skip?0:1)
             ],
             'next'=>[ 
-                'groups'=>$this->base().get_option('evg_groups_path','/api/v2.0/member-group'),
-                'custom_fields'=>$this->base().get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100'),
-                'members_list'=>$this->base().get_option('evg_members_path','/api/v2.0/member')
+                'groups'=>$this->normalize_endpoint(get_option('evg_groups_path','/api/v2.0/member-group')),
+                'custom_fields'=>$this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v2.0/custom-field')),
+                'members_list'=>$this->normalize_endpoint(get_option('evg_members_path','/api/v2.0/member'))
             ],
             'member_ids'=>[],
             'custom_field_types'=>[],
+            'custom_field_labels'=>[],
+            'custom_field_values_seen'=>[],
             'member_index'=>0,
             'cap'=>max(0,(int)$cap),
             'done'=>false
@@ -92,18 +325,20 @@ class EVG_Sync {
         $only = !empty($s['skip_groups']);
         $weights = $only
             ? [
-                'groups'=>0.10,
-                'custom_fields'=>0.12,
-                'members_list'=>0.35,
-                'details'=>0.25,
-                'member_custom_fields'=>0.18
+                'groups'=>0.05,
+                'custom_fields'=>0.20,
+                'custom_field_values'=>0.20,
+                'members_list'=>0.25,
+                'details'=>0.15,
+                'member_custom_fields'=>0.15
             ]
             : [
                 'groups'=>0.10,
-                'custom_fields'=>0.10,
-                'members_list'=>0.30,
-                'details'=>0.20,
-                'member_custom_fields'=>0.20,
+                'custom_fields'=>0.15,
+                'custom_field_values'=>0.10,
+                'members_list'=>0.25,
+                'details'=>0.15,
+                'member_custom_fields'=>0.15,
                 'member_groups'=>0.10
             ];
         $p = 0.0;
@@ -116,6 +351,7 @@ class EVG_Sync {
         $label .= (isset($s['phase']) ? $s['phase'] : '');
         $label .= ' – G:' . (isset($s['counts']['groups']) ? (string)$s['counts']['groups'] : '0');
         $label .= ' CF:' . (isset($s['counts']['custom_fields']) ? (string)$s['counts']['custom_fields'] : '0');
+        $label .= ' CFV:' . (isset($s['counts']['custom_field_values']) ? (string)$s['counts']['custom_field_values'] : '0');
         $label .= ' M:' . (isset($s['counts']['members_list']) ? (string)$s['counts']['members_list'] : '0');
         $label .= ' D:' . (isset($s['counts']['details']) ? (string)$s['counts']['details'] : '0');
         $label .= ' MC:' . (isset($s['counts']['member_custom_fields']) ? (string)$s['counts']['member_custom_fields'] : '0');
@@ -132,11 +368,20 @@ class EVG_Sync {
         if (!isset($s['custom_field_types']) || !is_array($s['custom_field_types'])){
             $s['custom_field_types'] = [];
         }
+        if (!isset($s['custom_field_labels']) || !is_array($s['custom_field_labels'])){
+            $s['custom_field_labels'] = [];
+        }
+        if (!isset($s['custom_field_values_seen']) || !is_array($s['custom_field_values_seen'])){
+            $s['custom_field_values_seen'] = [];
+        }
         if (!isset($s['pages']['custom_fields'])){
             $s['pages']['custom_fields'] = 0;
         }
         if (!isset($s['counts']['custom_fields'])){
             $s['counts']['custom_fields'] = 0;
+        }
+        if (!isset($s['counts']['custom_field_values'])){
+            $s['counts']['custom_field_values'] = 0;
         }
         if (!isset($s['counts']['member_custom_fields'])){
             $s['counts']['member_custom_fields'] = 0;
@@ -144,11 +389,14 @@ class EVG_Sync {
         if (!isset($s['est']['custom_fields'])){
             $s['est']['custom_fields'] = 1;
         }
+        if (!isset($s['est']['custom_field_values'])){
+            $s['est']['custom_field_values'] = 1;
+        }
         if (!isset($s['est']['member_custom_fields'])){
             $s['est']['member_custom_fields'] = 1;
         }
         if (!isset($s['next']['custom_fields'])){
-            $s['next']['custom_fields'] = $this->base().get_option('evg_custom_fields_path','/api/v2.0/custom-field?kind=E&limit=100');
+            $s['next']['custom_fields'] = $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v2.0/custom-field'));
         }
 
         $m_table=$this->table('members');
@@ -156,6 +404,7 @@ class EVG_Sync {
         $x_table=$this->table('member_groups');
         $cf_table=$this->table('custom_fields');
         $mv_table=$this->table('member_custom_fields');
+        $cv_table=$this->table('custom_field_values');
 
         $calls=0; $max=$this->calls_per_tick();
         while($calls<$max){
@@ -171,13 +420,13 @@ class EVG_Sync {
                 $code=wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Groups HTTP '.$code];
                 $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=[]; $next=null;
-                if (is_array($body)){
-                    if (array_keys($body)===range(0,count($body)-1)) $items=$body;
-                    else { $items=$body['results']??$body['data']??$body['items']??[]; $next=$body['next']??null; }
-                }
+                $items=$this->extract_items_from_payload($body);
+                $next=$this->extract_next_from_payload($body);
                 $now=current_time('mysql',1);
                 foreach((array)$items as $g){
+                    if (!is_array($g)){
+                        continue;
+                    }
                     $gid = isset($g['id']) ? $g['id'] : (isset($g['groupId']) ? $g['groupId'] : (isset($g['uuid']) ? $g['uuid'] : null));
                     if(!$gid) continue;
                     $name = isset($g['name']) ? $g['name'] : (isset($g['title']) ? $g['title'] : (isset($g['groupName']) ? $g['groupName'] : $gid));
@@ -209,13 +458,13 @@ class EVG_Sync {
                 $code=wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Custom-Fields HTTP '.$code];
                 $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=[]; $next=null;
-                if (is_array($body)){
-                    if (array_keys($body)===range(0,count($body)-1)) $items=$body;
-                    else { $items=$body['results']??$body['data']??$body['items']??[]; $next=$body['next']??null; }
-                }
+                $items=$this->extract_items_from_payload($body);
+                $next=$this->extract_next_from_payload($body);
                 $now=current_time('mysql',1);
                 foreach((array)$items as $field){
+                    if (!is_array($field)){
+                        continue;
+                    }
                     $fid = null;
                     foreach(['id','uuid','pk','customFieldId','fieldId'] as $fidKey){
                         if (isset($field[$fidKey]) && $field[$fidKey] !== ''){
@@ -278,6 +527,7 @@ class EVG_Sync {
                         ],
                         ['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']
                     );
+                    $s['custom_field_labels'][(string)$fid] = $name !== '' ? $name : (string)$fid;
                     $s['counts']['custom_fields']++;
                 }
                 $s['pages']['custom_fields']++;
@@ -300,13 +550,13 @@ class EVG_Sync {
                 $code=wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Members HTTP '.$code];
                 $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=[]; $next=null;
-                if (is_array($body)){
-                    if (array_keys($body)===range(0,count($body)-1)) $items=$body;
-                    else { $items=$body['results']??$body['data']??$body['items']??[]; $next=$body['next']??null; }
-                }
+                $items=$this->extract_items_from_payload($body);
+                $next=$this->extract_next_from_payload($body);
                 $now=current_time('mysql',1);
                 foreach((array)$items as $m){
+                    if (!is_array($m)){
+                        continue;
+                    }
                     $mid = isset($m['id']) ? $m['id'] : (isset($m['memberId']) ? $m['memberId'] : (isset($m['uuid']) ? $m['uuid'] : null));
                     $mno = isset($m['memberNumber']) ? $m['memberNumber'] : (isset($m['membershipNumber']) ? $m['membershipNumber'] : (isset($m['number']) ? $m['number'] : ''));
                     $cd  = '';
@@ -460,23 +710,20 @@ class EVG_Sync {
                     continue;
                 }
                 $mid=$s['member_ids'][$s['member_index']];
-                $cf_path = get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields?limit=100');
-                $cf_url = $this->base().str_replace('{id}',rawurlencode($mid),$cf_path);
+                $cf_path = get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields');
+                $cf_path = str_replace('{id}', rawurlencode($mid), $cf_path);
+                $cf_url = $this->normalize_endpoint($cf_path);
                 $resp=evg_http_get($cf_url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
                 $code = wp_remote_retrieve_response_code($resp);
                 if ($code<200 || $code>=300) return ['ok'=>false,'summary'=>'Member-Custom-Fields HTTP '.$code];
                 $payload=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=[];
-                if (is_array($payload)){
-                    if (array_keys($payload)===range(0,count($payload)-1)){
-                        $items=$payload;
-                    } else {
-                        $items=$payload['results']??$payload['data']??$payload['items']??[];
-                    }
-                }
+                $items=$this->extract_items_from_payload($payload);
                 $now=current_time('mysql',1);
                 foreach((array)$items as $entry){
+                    if (!is_array($entry)){
+                        continue;
+                    }
                     $field_id=null;
                     $fieldRef=$entry['customField']??$entry['custom_field']??null;
                     if (is_string($fieldRef) && $fieldRef!==''){
@@ -503,39 +750,69 @@ class EVG_Sync {
                         $field_id=(string)$entry['fieldId'];
                     }
                     if (!$field_id) continue;
-
-                    $value = null;
+                    $value_source = null;
                     if (array_key_exists('value',$entry)){
-                        $value = $entry['value'];
+                        $value_source = $entry['value'];
                     } elseif (array_key_exists('valueText',$entry)){
-                        $value = $entry['valueText'];
+                        $value_source = $entry['valueText'];
                     } elseif (array_key_exists('value_text',$entry)){
-                        $value = $entry['value_text'];
+                        $value_source = $entry['value_text'];
                     }
-                    if (is_array($value)){
-                        $value_text = wp_json_encode($value, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                    } elseif (is_bool($value)){
-                        $value_text = $value ? '1' : '0';
-                    } elseif (null === $value){
-                        $value_text = '';
+                    if (($value_source === null || $value_source === '' || $value_source === []) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])){
+                        $value_source = $entry['selectOptions'];
+                    }
+                    $prepared = $this->prepare_custom_field_value((string)$field_id, $value_source);
+                    if (!$prepared){
+                        continue;
+                    }
+                    $field_label = '';
+                    if (isset($s['custom_field_labels'][(string)$field_id]) && $s['custom_field_labels'][(string)$field_id] !== ''){
+                        $field_label = $s['custom_field_labels'][(string)$field_id];
                     } else {
-                        $value_text = (string)$value;
+                        $fetched_label = $wpdb->get_var($wpdb->prepare("SELECT name FROM {$cf_table} WHERE field_id=%s LIMIT 1", (string)$field_id));
+                        if ($fetched_label === null || $fetched_label === ''){
+                            $field_label = (string)$field_id;
+                        } else {
+                            $field_label = (string)$fetched_label;
+                        }
+                        $s['custom_field_labels'][(string)$field_id] = $field_label;
                     }
-                    if ($value_text === '' && isset($entry['selectOptions']) && is_array($entry['selectOptions'])){
-                        $value_text = wp_json_encode($entry['selectOptions'], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                    }
+
+                    $entry_raw = wp_json_encode($entry, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
                     $wpdb->replace(
                         $mv_table,
                         [
                             'member_id'  => $mid,
                             'field_id'   => (string)$field_id,
-                            'value_text' => $value_text,
+                            'value_hash' => $prepared['hash'],
+                            'value_text' => $prepared['label'],
                             'updated_at' => $now,
-                            'raw'        => wp_json_encode($entry, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+                            'raw'        => $entry_raw
                         ],
-                        ['%s','%s','%s','%s','%s']
+                        ['%s','%s','%s','%s','%s','%s']
                     );
                     $s['counts']['member_custom_fields']++;
+
+                    $cv_key = (string)$field_id.'|'.$prepared['hash'];
+                    $wpdb->replace(
+                        $cv_table,
+                        [
+                            'field_id'    => (string)$field_id,
+                            'value_hash'  => $prepared['hash'],
+                            'field_label' => $field_label !== '' ? $field_label : (string)$field_id,
+                            'value_label' => $prepared['label'],
+                            'value_raw'   => $prepared['raw'],
+                            'updated_at'  => $now
+                        ],
+                        ['%s','%s','%s','%s','%s','%s']
+                    );
+                    if (!isset($s['custom_field_values_seen'][$cv_key])){
+                        $s['custom_field_values_seen'][$cv_key] = true;
+                        $s['counts']['custom_field_values']++;
+                        if ($s['counts']['custom_field_values'] > $s['est']['custom_field_values']){
+                            $s['est']['custom_field_values'] = $s['counts']['custom_field_values'];
+                        }
+                    }
                 }
                 $s['member_index']++;
             }

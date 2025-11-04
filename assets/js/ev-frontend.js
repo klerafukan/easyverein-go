@@ -29,6 +29,16 @@
         }
         return String(value).split(/[,|]{1,2}/).map(v => v.trim()).filter(Boolean);
     }
+
+    function normalizeCustom(value){
+        if (Array.isArray(value)) {
+            return value.map(v => String(v).trim()).filter(Boolean);
+        }
+        if (value == null) {
+            return [];
+        }
+        return String(value).split(/[,|]{1,2}/).map(v => v.trim()).filter(Boolean);
+    }
     
     function formatCellValue(key, value) {
         if (key === 'groups') {
@@ -40,6 +50,11 @@
             const groups = normalizeGroups(value);
             if (groups.length === 0) return '<span class="evg-no-groups">Keine Gruppen</span>';
             return groups.map(g => `<span class="evg-group-badge">${escapeHtml(g)}</span>`).join(' ');
+        }
+        if (key === 'custom_fields' && value) {
+            const entries = normalizeCustom(value);
+            if (entries.length === 0) return '<span class="evg-no-groups">Keine Merkmale</span>';
+            return entries.map(v => `<span class="evg-custom-badge">${escapeHtml(v)}</span>`).join(' ');
         }
         if (key === 'date_of_birth' && value) {
             return escapeHtml(value);
@@ -157,15 +172,21 @@
         });
     }
     
-    function apply(allRows, query, group){
+    function apply(allRows, query, group, customToken){
         query=(query||'').toLowerCase();
+        const customKey = (customToken || '').toLowerCase();
         return allRows.filter(r=>{
             // Group filtering - check if member belongs to selected group
-            if (group) {
-                const normalizedSelected = group.toLowerCase();
-                const memberGroups = normalizeGroups(r.groups && r.groups.length ? r.groups : r.group_name);
-                const inGroup = memberGroups.some(g => g.toLowerCase() === normalizedSelected);
-                if(!inGroup) return false;
+        if (group) {
+            const normalizedSelected = group.toLowerCase();
+            const memberGroups = normalizeGroups(r.groups && r.groups.length ? r.groups : r.group_name);
+            const inGroup = memberGroups.some(g => g.toLowerCase() === normalizedSelected);
+            if(!inGroup) return false;
+        }
+            if (customKey) {
+                const tokens = Array.isArray(r.custom_pairs) ? r.custom_pairs : [];
+                const hasMatch = tokens.some(token => String(token).toLowerCase() === customKey);
+                if (!hasMatch) return false;
             }
             
             // Search filtering
@@ -190,6 +211,9 @@
             }
             if (c === 'groups' && value) {
                 value = normalizeGroups(value).join('; ');
+            }
+            if (c === 'custom_fields' && value) {
+                value = normalizeCustom(value).join('; ');
             }
             return '"'+String(value).replace(/"/g,'""')+'"';
         }).join(',') );
@@ -218,6 +242,7 @@
             }
             const $search = $wrap.find('.evg-search');
             const $filter = $wrap.find('.evg-group-filter');
+            const $customFilter = $wrap.find('.evg-custom-filter');
             const $loading= $wrap.find('.evg-loading');
             const $error  = $wrap.find('.evg-error');
             const $export = $wrap.find('.evg-export');
@@ -255,8 +280,10 @@
             }
 
             function refresh(){
-                const q=$search.val(); const g=$filter.val();
-                filtered = apply(ALL, q, g);
+                const q=$search.val();
+                const g=$filter.val();
+                const c=$customFilter.length ? $customFilter.val() : '';
+                filtered = apply(ALL, q, g, c);
                 filtered = sortRows(filtered, sortKey, sortDir);
                 pageIndex = 0;
                 updatePagination();
@@ -326,8 +353,11 @@
 
             $search.on('input', refresh);
             $filter.on('change', refresh);
+            if ($customFilter.length){
+                $customFilter.on('change', refresh);
+            }
             $export.on('click', function(){
-                const rows = apply(ALL, $search.val(), $filter.val());
+                const rows = apply(ALL, $search.val(), $filter.val(), $customFilter.length ? $customFilter.val() : '');
                 downloadCSV('easyverein_export.csv', rows, columns);
             });
             if ($pagePrev.length){
@@ -350,6 +380,21 @@
                 Object.keys(groups).forEach(gid=>{
                     $filter.append('<option value="'+escapeHtml(groups[gid])+'">'+escapeHtml(groups[gid])+'</option>');
                 });
+                const customFilters = resp.data.custom_filters || {};
+                if ($customFilter.length){
+                    $customFilter.find('option:not(:first)').remove();
+                    $customFilter.val('');
+                    const tokens = Object.keys(customFilters);
+                    if (tokens.length){
+                        tokens.forEach(token=>{
+                            $customFilter.append('<option value="'+escapeHtml(token)+'">'+escapeHtml(customFilters[token])+'</option>');
+                        });
+                        $customFilter.show();
+                    } else {
+                        $customFilter.val('');
+                        $customFilter.hide();
+                    }
+                }
                 refresh();
             }).fail(function(){ $loading.hide(); $error.text('Netzwerkfehler').show(); });
         });
