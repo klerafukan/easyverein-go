@@ -2,13 +2,13 @@
 /**
  * Plugin Name: Easyverein Go
  * Description: Mitglieder-Sync + lokales Frontend. Speichert und nutzt den contact-details Link pro Mitglied. Benutzerbezogene Gruppenfreigabe.
- * Version: 3.1.0
+ * Version: 3.2.0
  * Author: Tilmann Laux
  * Text Domain: ev-groups
  */
 if (!defined('ABSPATH')) { exit; }
 
-define('EVG_VERSION','3.1.0');
+define('EVG_VERSION','3.2.0');
 define('EVG_SLUG','easyverein-go');
 define('EVG_PATH', plugin_dir_path(__FILE__));
 define('EVG_URL', plugin_dir_url(__FILE__));
@@ -261,7 +261,7 @@ class EVG_Plugin {
         return $counts;
     }
 
-    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array(),$table_prefix='evg'){
+    private function send_sync_report($success,array $db_counts,array $state_counts,$error_message='',$tick_log=array(),$table_prefix='evg',$extra=[]){
         $report_email = trim((string) get_option('evg_sync_report_email',''));
         if ($report_email === '' || !is_email($report_email)){
             $report_email = get_option('admin_email');
@@ -273,32 +273,91 @@ class EVG_Plugin {
         if(empty($site_name)){
             $site_name='WordPress';
         }
-        $subject=sprintf('[%s] Easyverein Sync %s',$site_name,$success?'erfolgreich':'fehlgeschlagen');
+
+        $skipped = !empty($extra['skipped']);
+        if($skipped){
+            $subject=sprintf('[%s] Easyverein Sync übersprungen',$site_name);
+        } else {
+            $subject=sprintf('[%s] Easyverein Sync %s',$site_name,$success?'erfolgreich':'fehlgeschlagen');
+        }
+
         $timestamp=current_time('timestamp');
         $formatted_time=date_i18n('d.m.Y H:i',$timestamp);
 
         $lines=[];
+        if($skipped){
+            $lines[]='Der nächtliche Easyverein Sync wurde übersprungen.';
+            $lines[]='';
+            $lines[]='Grund: '.$error_message;
+            $lines[]='';
+            $lines[]='Zeitpunkt: '.$formatted_time;
+            $lines[]='';
+            $lines[]='Tipp: Der verklemmte State wird beim nächsten Cron-Lauf nach 3h Wartezeit';
+            $lines[]='automatisch zurückgesetzt. Manueller Reset: im Backend "Jetzt synchronisieren" klicken.';
+            wp_mail($report_email,$subject,implode("\n",$lines));
+            return;
+        }
+
         $lines[]=$success
-            ? 'Der naechtliche Easyverein Sync wurde erfolgreich abgeschlossen.'
-            : 'Der naechtliche Easyverein Sync wurde NICHT erfolgreich abgeschlossen.';
+            ? 'Der nächtliche Easyverein Sync wurde erfolgreich abgeschlossen.'
+            : 'Der nächtliche Easyverein Sync wurde NICHT erfolgreich abgeschlossen.';
+
+        if(!empty($extra['stuck_info'])){
+            $lines[]='';
+            $lines[]='[!] '.$extra['stuck_info'];
+        }
         if(!$success && !empty($error_message)){
             $lines[]='';
-            $lines[]='Fehlerhinweis: '.$error_message;
+            $lines[]='Fehlerursache: '.$error_message;
+        }
+        if(!$success && !empty($extra['last_phase'])){
+            $lines[]='Zuletzt erreichte Phase: '.$extra['last_phase'];
+        }
+        if(!$success && !empty($extra['wpdb_error'])){
+            $lines[]='Letzter DB-Fehler: '.$extra['wpdb_error'];
         }
         $lines[]='';
         $lines[]='Zeitpunkt: '.$formatted_time;
-        $lines[]='';
-        $lines[]='Lokale Datenbankstaende:';
-        $lines[]='- Gruppen: '.(int)$db_counts['groups'];
-        $lines[]='- Mitglieder gesamt: '.(int)$db_counts['members'];
-        $lines[]='- Mitglieder mit Kontakt-Details: '.(int)$db_counts['members_with_contact'];
-        $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
-        $lines[]='- Custom Fields: '.(int)$db_counts['custom_fields'];
-        $lines[]='- Custom-Field-Werte: '.(int)$db_counts['member_custom_fields'];
-        $lines[]='- Custom-Field-Optionen: '.(int)$db_counts['custom_field_values'];
-        if(EVG_Sync::sanitize_table_prefix($table_prefix)!=='evg'){
+
+        if(!empty($extra)){
             $lines[]='';
-            $lines[]='Hinweis: Dieser Lauf schrieb in Tabellen mit Präfix „'.EVG_Sync::sanitize_table_prefix($table_prefix).'“.';
+            $lines[]='=== Lauf-Diagnose ===';
+            if(isset($extra['elapsed'])){
+                $lines[]='Laufzeit: '.number_format((float)$extra['elapsed'],1,'.',',').'s ('.gmdate('H:i:s',(int)$extra['elapsed']).')';}
+            if(isset($extra['iterations'])){
+                $lines[]='Tick-Iterationen: '.(int)$extra['iterations'];
+            }
+            if(isset($extra['peak_memory'])){
+                $lines[]='Peak-Speicher: '.round((int)$extra['peak_memory']/1024/1024,1).' MB';
+            }
+            if(isset($extra['php_version'])){
+                $lines[]='PHP: '.$extra['php_version']
+                    .' | memory_limit: '.($extra['memory_limit']??'?')
+                    .' | max_execution_time: '.($extra['max_exec_time']??'?').'s (gesetzt auf 0)';
+            }
+            if(isset($extra['wp_version'])){
+                $lines[]='WordPress: '.$extra['wp_version'];
+            }
+            if(!empty($extra['next_cron'])){
+                $lines[]='Nächster Cron-Lauf: '.date_i18n('d.m.Y H:i',(int)$extra['next_cron']);
+            }
+        }
+
+        $lines[]='';
+        $lines[]='=== Datenbankstände ('.EVG_Sync::sanitize_table_prefix($table_prefix).') ===';
+        if(!empty($db_counts)){
+            $lines[]='- Gruppen: '.(int)$db_counts['groups'];
+            $lines[]='- Mitglieder gesamt: '.(int)$db_counts['members'];
+            $lines[]='- Mitglieder mit Kontakt-Details: '.(int)$db_counts['members_with_contact'];
+            $lines[]='- Gruppen-Zuordnungen: '.(int)$db_counts['member_groups'];
+            $lines[]='- Custom Fields: '.(int)$db_counts['custom_fields'];
+            $lines[]='- Custom-Field-Werte: '.(int)$db_counts['member_custom_fields'];
+            $lines[]='- Custom-Field-Optionen: '.(int)$db_counts['custom_field_values'];
+        } else {
+            $lines[]='(keine Daten — Sync wurde möglicherweise nicht gestartet)';
+        }
+        if(EVG_Sync::sanitize_table_prefix($table_prefix)!=='evg'){
+            $lines[]='Hinweis: Test-Tabellen (Präfix "'.EVG_Sync::sanitize_table_prefix($table_prefix).'" ), nicht die produktiven Tabellen.';
         }
 
         $state_sum=0;
@@ -307,7 +366,7 @@ class EVG_Plugin {
         }
         if($state_sum>0){
             $lines[]='';
-            $lines[]='API-Zaehler (Rohdaten):';
+            $lines[]='=== API-Zähler ===';
             $lines[]='- Gruppen abgeholt: '.(int)$state_counts['groups'];
             $lines[]='- Custom Fields geladen: '.(int)$state_counts['custom_fields'];
             $lines[]='- Custom-Field-Optionen gespeichert: '.(int)$state_counts['custom_field_values'];
@@ -318,17 +377,17 @@ class EVG_Plugin {
         }
         if(!empty($state_counts['skip_groups'])){
             $lines[]='';
-            $lines[]='Hinweis: Gruppen-Import war fuer diese Ausfuehrung deaktiviert.';
+            $lines[]='Hinweis: Gruppen-Import war für diese Ausführung deaktiviert.';
         }
         if(!$success){
             $lines[]='';
-            $lines[]='Bitte pruefe das Easyverein Log oder aktiviere den Debug-Modus in den Plugin-Einstellungen.';
+            $lines[]='Tipp: Debug-Modus in den Plugin-Einstellungen aktivieren.';
+            $lines[]='Protokolldateien: wp-content/easyverein-debug/';
         }
         if(!empty($tick_log)){
             $lines[]='';
-            $lines[]='Hinweis: Ein manueller Vollsync dauert erfahrungsgemaess 30-50 Minuten.';
-            $lines[]='Tick-Log (letzte 10 Eintraege):';
-            foreach(array_slice($tick_log,-10) as $entry){
+            $lines[]='=== Tick-Log ('.count($tick_log).' Einträge) ===';
+            foreach($tick_log as $entry){
                 $lines[]='  '.$entry;
             }
         }
@@ -386,17 +445,49 @@ class EVG_Plugin {
         if(function_exists('wp_doing_cron') && !wp_doing_cron()){
             return;
         }
+
+        // Zeitlimit aufheben (WP-Cron läuft ggf. unter kurzem PHP-Limit)
+        if(function_exists('set_time_limit')){
+            @set_time_limit(0);
+        }
+
+        $start_time = microtime(true);
+
         $raw_prefix=get_option('evg_nightly_sync_table_prefix',self::NIGHTLY_TABLE_PREFIX);
         $raw_prefix=apply_filters('evg_nightly_sync_table_prefix',$raw_prefix);
         $nightly_prefix=EVG_Sync::sanitize_table_prefix($raw_prefix);
         $this->ensure_tables_for_prefix($nightly_prefix);
         $sync=new EVG_Sync($nightly_prefix);
+
+        // Stuck-State-Erkennung: verhindert dauerhaftes Blockieren bei Fehlern
         $state=get_option($sync->get_state_option_key(),[]);
+        $stuck_info = '';
         if(is_array($state) && !empty($state) && empty($state['done'])){
-            // another sync is running, skip
-            return;
+            $started_at = isset($state['started_at']) ? (int)$state['started_at'] : 0;
+            if($started_at > 0 && (time() - $started_at) < 3 * HOUR_IN_SECONDS){
+                // Tatsächlich noch laufend (gestartet vor weniger als 3 Stunden)
+                $since = date_i18n('d.m.Y H:i', $started_at);
+                $this->send_sync_report(
+                    false, [], [],
+                    'Sync läuft noch (gestartet: '.$since.'). Neuer Start wird übersprungen.',
+                    [], $nightly_prefix, ['skipped' => true]
+                );
+                return;
+            }
+            // Verklemmt — State war älter als 3 Stunden, wird zurückgesetzt
+            $since_label = $started_at ? date_i18n('d.m.Y H:i', $started_at) : 'unbekanntem Zeitpunkt';
+            $stuck_info = 'Verklemmter Sync-State von '.$since_label.' wurde automatisch zurückgesetzt.';
         }
+
         $sync->job_start(0);
+
+        // Startzeitstempel in State schreiben (für künftige Stuck-State-Erkennung)
+        $st = get_option($sync->get_state_option_key(), []);
+        if(is_array($st)){
+            $st['started_at'] = time();
+            update_option($sync->get_state_option_key(), $st, false);
+        }
+
         $max_iterations = (int) apply_filters('evg_nightly_sync_iteration_limit', 20000);
         $time_budget    = (int) apply_filters('evg_nightly_sync_time_budget', 60 * MINUTE_IN_SECONDS);
         if ($max_iterations < 100) { $max_iterations = 100; }
@@ -419,9 +510,6 @@ class EVG_Plugin {
             }
             if(empty($result['ok'])){
                 $error_message=isset($result['summary']) ? (string)$result['summary'] : 'Unbekannter Fehler';
-                if(get_option('evg_debug',0)){
-                    error_log(sprintf('EVG nightly sync (%s) failed: %s',$nightly_prefix,$error_message));
-                }
                 break;
             }
             if(!empty($result['done'])){
@@ -430,20 +518,16 @@ class EVG_Plugin {
             }
             $max_iterations--;
             if($max_iterations<=0){
-                $error_message='Abbruch nach Iterationslimit';
-                if(get_option('evg_debug',0)){
-                    error_log(sprintf('EVG nightly sync (%s) aborted: %s',$nightly_prefix,$error_message));
-                }
+                $error_message='Abbruch nach Iterationslimit ('.apply_filters('evg_nightly_sync_iteration_limit',20000).' Ticks)';
                 break;
             }
             if(microtime(true) >= $deadline){
-                $error_message='Abbruch nach Zeitlimit';
-                if(get_option('evg_debug',0)){
-                    error_log(sprintf('EVG nightly sync (%s) aborted: %s',$nightly_prefix,$error_message));
-                }
+                $error_message='Abbruch nach Zeitlimit ('.round($time_budget/60).' Minuten)';
                 break;
             }
         }
+
+        $elapsed = microtime(true) - $start_time;
 
         $state_final=get_option($sync->get_state_option_key(),[]);
         $state_counts=[
@@ -457,7 +541,22 @@ class EVG_Plugin {
             'skip_groups'=>!empty($state_final['skip_groups'])
         ];
         $db_counts=$this->collect_sync_db_counts($nightly_prefix);
-        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message,$tick_log,$nightly_prefix);
+
+        global $wpdb;
+        $extra = [
+            'elapsed'      => $elapsed,
+            'iterations'   => $iteration,
+            'peak_memory'  => memory_get_peak_usage(true),
+            'php_version'  => PHP_VERSION,
+            'memory_limit' => ini_get('memory_limit'),
+            'max_exec_time'=> ini_get('max_execution_time'),
+            'wp_version'   => get_bloginfo('version'),
+            'next_cron'    => wp_next_scheduled(self::CRON_HOOK),
+            'stuck_info'   => $stuck_info,
+            'last_phase'   => isset($state_final['phase']) ? $state_final['phase'] : '',
+            'wpdb_error'   => $wpdb->last_error,
+        ];
+        $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message,$tick_log,$nightly_prefix,$extra);
     }
 
     public function register_rest_endpoints(){

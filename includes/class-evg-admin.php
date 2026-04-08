@@ -27,7 +27,7 @@ class EVG_Admin {
 
     public function settings(){
         register_setting('evg_settings','evg_api_base',['type'=>'string','sanitize_callback'=>'esc_url_raw']);
-        register_setting('evg_settings','evg_api_key');
+        register_setting('evg_settings','evg_api_key',['sanitize_callback'=>'sanitize_text_field']);
         register_setting('evg_settings','evg_auth_header');
         register_setting('evg_settings','evg_groups_path');
         register_setting('evg_settings','evg_members_path');
@@ -58,7 +58,29 @@ class EVG_Admin {
                 <h2><?php echo esc_html__('API','ev-groups'); ?></h2>
                 <table class="form-table">
                     <tr><th>API Base URL</th><td><input type="text" name="evg_api_base" class="regular-text" placeholder="https://easyverein.com" value="<?php echo esc_attr(get_option('evg_api_base','')); ?>"></td></tr>
-                    <tr><th>API Schlüssel</th><td><input type="text" name="evg_api_key" class="regular-text" placeholder="sk_live_…" value="<?php echo esc_attr(get_option('evg_api_key','')); ?>"></td></tr>
+                    <tr><th>API Schlüssel</th><td>
+                        <input type="password" name="evg_api_key" class="regular-text" placeholder="sk_live_…" value="<?php echo esc_attr(get_option('evg_api_key','')); ?>">
+                        <?php
+                        $token_age = evg_api_token_age_days();
+                        if ($token_age === null):
+                        ?>
+                            <p class="description" style="color:#b45309;">
+                                ⚠️ <?php esc_html_e('Token-Alter unbekannt – noch kein automatischer Refresh durchgeführt. Empfohlen: mindestens einen Sync-Lauf starten.','ev-groups'); ?>
+                            </p>
+                        <?php elseif ($token_age >= 25): ?>
+                            <p class="description" style="color:#dc2626;font-weight:600;">
+                                ⛔ <?php printf(esc_html__('Token ist %d Tage alt – bitte erneuern! (EasyVerein: „GET /api/v2.0/refresh-token" oder nächsten Sync abwarten)','ev-groups'), $token_age); ?>
+                            </p>
+                        <?php elseif ($token_age >= 15): ?>
+                            <p class="description" style="color:#b45309;">
+                                ⚠️ <?php printf(esc_html__('Token ist %d Tage alt – Erneuerung beim nächsten Sync-Lauf empfohlen.','ev-groups'), $token_age); ?>
+                            </p>
+                        <?php else: ?>
+                            <p class="description" style="color:#15803d;">
+                                ✓ <?php printf(esc_html__('Token zuletzt erneuert vor %d Tag(en).','ev-groups'), $token_age); ?>
+                            </p>
+                        <?php endif; ?>
+                    </td></tr>
                     <tr><th>Auth Header</th><td><select name="evg_auth_header"><?php $v=get_option('evg_auth_header','Authorization Bearer'); ?>
                         <option value="Authorization Bearer" <?php selected($v,'Authorization Bearer'); ?>>Authorization: Bearer {KEY}</option>
                         <option value="X-API-Key" <?php selected($v,'X-API-Key'); ?>>X-API-Key: {KEY}</option>
@@ -140,60 +162,101 @@ class EVG_Admin {
                 <div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden"><span id="evg-bar" style="display:block;height:100%;background:#10b981;width:0%"></span></div>
                 <pre id="evg-log" style="max-height:220px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px"></pre>
             </div>
+
+            <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
+                <h2><?php echo esc_html__('Nächtlichen Sync simulieren','ev-groups'); ?></h2>
+                <p>
+                    <?php
+                    $nightly_prefix_display = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly')) ?: 'evg_nightly';
+                    printf(
+                        esc_html__('Führt den vollständigen nächtlichen Sync manuell aus – schreibt in die Spiegel-Tabellen mit Präfix „%s". Die Live-Daten werden nicht verändert.','ev-groups'),
+                        '<code>'.esc_html($nightly_prefix_display).'</code>'
+                    );
+                    ?>
+                </p>
+                <p>
+                    <button id="evg-nightly-sim" class="button button-primary"><?php echo esc_html__('Nächtlichen Sync jetzt simulieren','ev-groups'); ?></button>
+                    <span id="evg-nightly-sim-out" style="margin-left:8px;opacity:.8"></span>
+                </p>
+                <div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden"><span id="evg-nightly-bar" style="display:block;height:100%;background:#6366f1;width:0%"></span></div>
+                <pre id="evg-nightly-log" style="max-height:220px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px"></pre>
+            </div>
         </div>
         <script>
         (function(){
-            const ajax=ajaxurl, n1='<?php echo wp_create_nonce('evg_sync'); ?>';
-            const bar=document.getElementById('evg-bar');
-            const log=document.getElementById('evg-log');
-            const tOut=document.getElementById('evg-test-conn-out');
-            const tickPause = parseInt('<?php echo (int) get_option("evg_tick_pause_ms",900); ?>',10)||900;
-            const manualPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'))); ?>';
-            const nightlyPrefixRaw = '<?php echo esc_js(evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'))); ?>';
-            const manualPrefix = manualPrefixRaw || 'evg';
-            const nightlyPrefix = nightlyPrefixRaw || 'evg_nightly';
-            let currentPrefix = 'evg';
-            let jobFinished = false;
-            function push(line){ const ts=new Date().toLocaleTimeString(); log.textContent='['+ts+'] '+line+'\n'+log.textContent; }
-            function setP(p,txt){ if(p<0)p=0;if(p>100)p=100; bar.style.width=p.toFixed(1)+'%'; if(txt) push(txt+' ('+p.toFixed(1)+'%)'); }
+            var EVGAdmin = <?php echo wp_json_encode([
+                'nonce'         => wp_create_nonce('evg_sync'),
+                'tickPause'     => (int) get_option('evg_tick_pause_ms', 900),
+                'manualPrefix'  => evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix', 'evg')) ?: 'evg',
+                'nightlyPrefix' => evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix', 'evg_nightly')) ?: 'evg_nightly',
+            ]); ?>;
+            const ajax      = ajaxurl;
+            const n1        = EVGAdmin.nonce;
+            const tickPause = EVGAdmin.tickPause || 900;
 
-            document.getElementById('evg-test-conn').onclick=function(e){ e.preventDefault(); tOut.textContent='teste…';
-                jQuery.post(ajax,{action:'evg_test_connection',_wpnonce:n1},function(r){ tOut.textContent=(r&&r.success&&r.data&&r.data.message)?r.data.message:'OK'; }).fail(function(){ tOut.textContent='Netzwerkfehler'; });
-            };
-            function tick(){
-                jQuery.post(ajax,{action:'evg_sync_tick',_wpnonce:n1,prefix:currentPrefix},function(r){
-                    if(r&&r.success){
-                        const d=r.data||{};
-                        setP(d.percent||0, d.label||'…');
-                        if(d.done){
-                            if(!jobFinished){
-                                jobFinished = true;
-                                push('Job abgeschlossen ['+currentPrefix+']');
+            // Erstellt einen unabhängigen Sync-Kontext für einen bestimmten Fortschrittsbalken + Log.
+            function makeSyncContext(barEl, logEl) {
+                let activePrefix = '';
+                let finished     = false;
+                function push(line) {
+                    const ts = new Date().toLocaleTimeString();
+                    logEl.textContent = '['+ts+'] '+line+'\n'+logEl.textContent;
+                }
+                function setP(p, txt) {
+                    if (p < 0) p = 0; if (p > 100) p = 100;
+                    barEl.style.width = p.toFixed(1)+'%';
+                    if (txt) push(txt+' ('+p.toFixed(1)+'%)');
+                }
+                function tick() {
+                    jQuery.post(ajax, {action:'evg_sync_tick', _wpnonce:n1, prefix:activePrefix}, function(r) {
+                        if (r && r.success) {
+                            const d = r.data || {};
+                            setP(d.percent || 0, d.label || '…');
+                            if (d.done) {
+                                if (!finished) { finished = true; push('Abgeschlossen ['+activePrefix+']'); }
+                            } else {
+                                setTimeout(tick, tickPause);
                             }
-                        } else {
-                            setTimeout(tick,tickPause);
                         }
-                    }
-                });
+                    });
+                }
+                return function startJob(prefix, cap) {
+                    activePrefix = prefix || 'evg';
+                    finished     = false;
+                    const payload = {action:'evg_sync_start', _wpnonce:n1, prefix:activePrefix};
+                    if (cap) payload.cap = cap;
+                    jQuery.post(ajax, payload, function(r) {
+                        if (r && r.success) {
+                            const sp = r.data && r.data.prefix ? r.data.prefix : activePrefix;
+                            activePrefix = sp || activePrefix;
+                            push((cap ? 'Quick-Job ('+cap+')' : 'Job')+' gestartet ['+activePrefix+']');
+                            setP(0, 'Start');
+                            tick();
+                        }
+                    });
+                };
             }
-            function startSync(prefix,cap){
-                currentPrefix = (prefix && prefix.length) ? prefix : 'evg';
-                jobFinished = false;
-                const payload = {action:'evg_sync_start',_wpnonce:n1,prefix:currentPrefix};
-                if(cap){ payload.cap = cap; }
-                jQuery.post(ajax,payload,function(r){
-                    if(r&&r.success){
-                        const serverPrefix = r.data && r.data.prefix ? r.data.prefix : currentPrefix;
-                        currentPrefix = serverPrefix || currentPrefix;
-                        const title = cap ? 'Quick-Job ('+cap+')' : 'Job';
-                        push(title+' gestartet ['+currentPrefix+']');
-                        setP(0,'Start');
-                        tick();
-                    }
-                });
-            }
-            document.getElementById('evg-sync-start').onclick=function(e){ e.preventDefault(); startSync(manualPrefix); };
-            document.getElementById('evg-sync-quick10').onclick=function(e){ e.preventDefault(); startSync(nightlyPrefix,10); };
+
+            const manualSync  = makeSyncContext(
+                document.getElementById('evg-bar'),
+                document.getElementById('evg-log')
+            );
+            const nightlySync = makeSyncContext(
+                document.getElementById('evg-nightly-bar'),
+                document.getElementById('evg-nightly-log')
+            );
+
+            const tOut = document.getElementById('evg-test-conn-out');
+            document.getElementById('evg-test-conn').onclick = function(e) {
+                e.preventDefault(); tOut.textContent = 'teste…';
+                jQuery.post(ajax, {action:'evg_test_connection', _wpnonce:n1}, function(r) {
+                    tOut.textContent = (r && r.success && r.data && r.data.message) ? r.data.message : 'OK';
+                }).fail(function() { tOut.textContent = 'Netzwerkfehler'; });
+            };
+
+            document.getElementById('evg-sync-start').onclick    = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix); };
+            document.getElementById('evg-sync-quick10').onclick   = function(e) { e.preventDefault(); manualSync(EVGAdmin.nightlyPrefix, 10); };
+            document.getElementById('evg-nightly-sim').onclick    = function(e) { e.preventDefault(); nightlySync(EVGAdmin.nightlyPrefix); };
         })();
         </script>
     <?php }

@@ -151,8 +151,8 @@ class EVG_Frontend {
         $cv_table = $wpdb->prefix.'evg_custom_field_values';
 
         if ($restrict_groups){
-            $in = implode("','", array_map('esc_sql', $selected_group_ids));
-            $group_results = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table WHERE group_id IN ('$in')");
+            $placeholders = implode(',', array_fill(0, count($selected_group_ids), '%s'));
+            $group_results = $wpdb->get_results($wpdb->prepare("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table WHERE group_id IN ($placeholders)", ...$selected_group_ids));
         } else {
             $group_results = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM $g_table");
         }
@@ -164,9 +164,9 @@ class EVG_Frontend {
         $joins = [];
         $groups_where = '';
         if ($restrict_groups){
-            $in = implode("','", array_map('esc_sql', $selected_group_ids));
+            $placeholders = implode(',', array_fill(0, count($selected_group_ids), '%s'));
             $joins[] = "JOIN $x_table x ON x.member_id = m.member_id";
-            $groups_where = "x.group_id IN ('$in')";
+            $groups_where = $wpdb->prepare("x.group_id IN ($placeholders)", ...$selected_group_ids);
         } else {
             $joins[] = "LEFT JOIN $x_table x ON x.member_id = m.member_id";
         }
@@ -182,9 +182,8 @@ class EVG_Frontend {
         if ($custom_restrict){
             $exists_cases = [];
             foreach ($custom_field_map as $field_id => $hashes){
-                $field_sql = esc_sql($field_id);
-                $hash_sql = implode("','", array_map('esc_sql', $hashes));
-                $exists_cases[] = "(mc1.field_id = '{$field_sql}' AND mc1.value_hash IN ('{$hash_sql}'))";
+                $hash_placeholders = implode(',', array_fill(0, count($hashes), '%s'));
+                $exists_cases[] = $wpdb->prepare("(mc1.field_id = %s AND mc1.value_hash IN ($hash_placeholders))", ...array_merge([$field_id], $hashes));
             }
             if (!empty($exists_cases)){
                 $exists_sql = "EXISTS (SELECT 1 FROM $mc_table mc1 WHERE mc1.member_id = m.member_id AND (".implode(' OR ', $exists_cases)."))";
@@ -202,14 +201,6 @@ class EVG_Frontend {
                 ' GROUP BY m.member_id';
 
         $data = $wpdb->get_results($sql, ARRAY_A);
-
-        if (get_option('evg_debug', 0)) {
-            error_log('EVG Frontend SQL: ' . $sql);
-            error_log('EVG Frontend Data Count: ' . count($data));
-            if (!empty($data)) {
-                error_log('EVG Frontend Sample Row: ' . print_r($data[0], true));
-            }
-        }
 
         $rows = array();
         foreach ((array)$data as $d){
@@ -301,9 +292,8 @@ class EVG_Frontend {
         $custom_option_conditions = [];
         if ($custom_restrict){
             foreach ($custom_field_map as $field_id => $hashes){
-                $field_sql = esc_sql($field_id);
-                $hash_sql = implode("','", array_map('esc_sql', $hashes));
-                $custom_option_conditions[] = "(cv.field_id = '{$field_sql}' AND cv.value_hash IN ('{$hash_sql}'))";
+                $hash_placeholders = implode(',', array_fill(0, count($hashes), '%s'));
+                $custom_option_conditions[] = $wpdb->prepare("(cv.field_id = %s AND cv.value_hash IN ($hash_placeholders))", ...array_merge([$field_id], $hashes));
             }
         }
         $custom_where_sql = '';

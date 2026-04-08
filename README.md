@@ -1,6 +1,6 @@
 # Easyverein Go
 
-Aktuelle Plugin-Version: **3.1.0**
+Aktuelle Plugin-Version: **3.2.0**
 
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
@@ -10,7 +10,11 @@ Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegel
   Lädt Mitglieder, Gruppen, Contact-Details, Custom-Field-Definitionen sowie alle Member→Gruppen- und Member→Custom-Field-Werte herunter und speichert sie lokal in eigenen Tabellen (`wp_evg_*`).  
   • Manueller Sync über die Admin-Oberfläche („Jetzt synchronisieren“ / „Nur 10 Mitglieder testen“) – der Quick-Test nutzt automatisch das Nightly-Präfix für gefahrloses Testen.  
   • Optionaler nächtlicher Vollsync via WP-Cron (ca. 03:00 Uhr, wenn in den Einstellungen aktiviert; schreibt standardmäßig in das Testpräfix `wp_evg_nightly_*`)  
+  • **Nächtlichen Sync manuell simulieren** direkt über die Admin-Oberfläche – vollständiger Lauf in die Spiegel-Tabellen, mit eigenem Fortschrittsbalken und Log (sichere Vorschau ohne Auswirkung auf Produktivdaten)
   • Fehlertolerante API-Aufrufe mit Retry/Backoff, konfigurierbaren Limits und Logging (bei aktivem Debug)
+
+- **Automatische API-Token-Erneuerung**  
+  EasyVerein-API-Tokens sind 30 Tage gültig und sollten nach 15 Tagen erneuert werden. Das Plugin erkennt den `tokenRefreshNeeded`-Response-Header der API und ruft automatisch `GET /api/v2.0/refresh-token` auf, sobald ein Refresh fällig ist. Der neue Token wird sofort gespeichert und für alle folgenden Requests verwendet. Bei Erfolg oder Fehler wird eine kurze E-Mail an die konfigurierte Protokoll-Adresse gesendet. Im Admin-Bereich wird das Alter des Tokens farbcodiert angezeigt (grün / gelb / rot).
 
 - **Frontend-Tabelle für Mitglieder**  
   Shortcode `[easyverein_table]` zeigt die synchronisierten Mitglieder als sortierbare, paginierte Tabelle (100 Einträge pro Seite) mit Live-Suche, Gruppenfilter und CSV-Export. Standardmäßig werden kompakte Spalten (Vorname, Nachname, Kontaktwege, Adresse, Gruppen) angezeigt; zusätzliche Felder können optional per Shortcode zugeschaltet werden.  
