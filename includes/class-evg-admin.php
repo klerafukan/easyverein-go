@@ -156,6 +156,7 @@ class EVG_Admin {
                 <p>
                     <button id="evg-sync-start" class="button button-primary"><?php echo esc_html__('Jetzt synchronisieren','ev-groups'); ?></button>
                     <button id="evg-sync-quick10" class="button"><?php echo esc_html__('Nur 10 Mitglieder testen','ev-groups'); ?></button>
+                    <button id="evg-sync-stop" class="button" style="display:none;color:#dc2626;border-color:#dc2626"><?php echo esc_html__('Stop','ev-groups'); ?></button>
                     <button id="evg-test-conn" class="button"><?php echo esc_html__('Verbindung testen','ev-groups'); ?></button>
                     <span id="evg-test-conn-out" style="margin-left:8px;opacity:.8"></span>
                 </p>
@@ -195,9 +196,10 @@ class EVG_Admin {
             const tickPause = EVGAdmin.tickPause || 900;
 
             // Erstellt einen unabhängigen Sync-Kontext für einen bestimmten Fortschrittsbalken + Log.
-            function makeSyncContext(barEl, logEl) {
+            function makeSyncContext(barEl, logEl, stopBtn) {
                 let activePrefix = '';
                 let finished     = false;
+                let stopped      = false;
                 function push(line) {
                     const ts = new Date().toLocaleTimeString();
                     logEl.textContent = '['+ts+'] '+line+'\n'+logEl.textContent;
@@ -207,22 +209,38 @@ class EVG_Admin {
                     barEl.style.width = p.toFixed(1)+'%';
                     if (txt) push(txt+' ('+p.toFixed(1)+'%)');
                 }
+                function showStop(show) {
+                    if (stopBtn) stopBtn.style.display = show ? '' : 'none';
+                }
                 function tick() {
+                    if (stopped) { showStop(false); return; }
                     jQuery.post(ajax, {action:'evg_sync_tick', _wpnonce:n1, prefix:activePrefix}, function(r) {
+                        if (stopped) { showStop(false); return; }
                         if (r && r.success) {
                             const d = r.data || {};
                             setP(d.percent || 0, d.label || '…');
                             if (d.done) {
                                 if (!finished) { finished = true; push('Abgeschlossen ['+activePrefix+']'); }
+                                showStop(false);
                             } else {
                                 setTimeout(tick, tickPause);
                             }
                         }
                     });
                 }
+                if (stopBtn) {
+                    stopBtn.onclick = function(e) {
+                        e.preventDefault();
+                        stopped = true;
+                        showStop(false);
+                        push('Manuell gestoppt ['+activePrefix+']');
+                    };
+                }
                 return function startJob(prefix, cap) {
                     activePrefix = prefix || 'evg';
                     finished     = false;
+                    stopped      = false;
+                    showStop(true);
                     const payload = {action:'evg_sync_start', _wpnonce:n1, prefix:activePrefix};
                     if (cap) payload.cap = cap;
                     jQuery.post(ajax, payload, function(r) {
@@ -239,7 +257,8 @@ class EVG_Admin {
 
             const manualSync  = makeSyncContext(
                 document.getElementById('evg-bar'),
-                document.getElementById('evg-log')
+                document.getElementById('evg-log'),
+                document.getElementById('evg-sync-stop')
             );
             const nightlySync = makeSyncContext(
                 document.getElementById('evg-nightly-bar'),
