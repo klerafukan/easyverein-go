@@ -274,7 +274,7 @@ class EVG_Admin {
             };
 
             document.getElementById('evg-sync-start').onclick    = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix); };
-            document.getElementById('evg-sync-quick10').onclick   = function(e) { e.preventDefault(); manualSync(EVGAdmin.nightlyPrefix, 10); };
+            document.getElementById('evg-sync-quick10').onclick   = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix, 10); };
             document.getElementById('evg-nightly-sim').onclick    = function(e) { e.preventDefault(); nightlySync(EVGAdmin.nightlyPrefix); };
         })();
         </script>
