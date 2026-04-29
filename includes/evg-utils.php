@@ -116,7 +116,7 @@ function evg_refresh_api_token(){
     if ($base === '') {
         return false;
     }
-    $refresh_url = $base . '/api/v2.0/refresh-token';
+    $refresh_url = $base . '/api/v3.0/refresh-token';
     $key         = (string) get_option('evg_api_key','');
     $hdr         = (string) get_option('evg_auth_header','Authorization Bearer');
     $req_headers = ['Accept' => 'application/json'];

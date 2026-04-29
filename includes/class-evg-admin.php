@@ -69,7 +69,7 @@ class EVG_Admin {
                             </p>
                         <?php elseif ($token_age >= 25): ?>
                             <p class="description" style="color:#dc2626;font-weight:600;">
-                                ⛔ <?php printf(esc_html__('Token ist %d Tage alt – bitte erneuern! (EasyVerein: „GET /api/v2.0/refresh-token" oder nächsten Sync abwarten)','ev-groups'), $token_age); ?>
+                                ⛔ <?php printf(esc_html__('Token ist %d Tage alt – bitte erneuern! (EasyVerein: „GET /api/v3.0/refresh-token" oder nächsten Sync abwarten)','ev-groups'), $token_age); ?>
                             </p>
                         <?php elseif ($token_age >= 15): ?>
                             <p class="description" style="color:#b45309;">
@@ -85,12 +85,12 @@ class EVG_Admin {
                         <option value="Authorization Bearer" <?php selected($v,'Authorization Bearer'); ?>>Authorization: Bearer {KEY}</option>
                         <option value="X-API-Key" <?php selected($v,'X-API-Key'); ?>>X-API-Key: {KEY}</option>
                     </select></td></tr>
-                    <tr><th>Groups Path</th><td><input type="text" name="evg_groups_path" class="regular-text" placeholder="/api/v2.0/member-group" value="<?php echo esc_attr(get_option('evg_groups_path','/api/v2.0/member-group')); ?>"></td></tr>
-                    <tr><th>Members Path</th><td><input type="text" name="evg_members_path" class="regular-text" placeholder="/api/v2.0/member" value="<?php echo esc_attr(get_option('evg_members_path','/api/v2.0/member')); ?>"></td></tr>
-                    <tr><th>Contact-Details Path</th><td><input type="text" name="evg_contact_details_path" class="regular-text" placeholder="/api/v2.0/contact-details/{id}" value="<?php echo esc_attr(get_option('evg_contact_details_path','/api/v2.0/contact-details/{id}')); ?>"></td></tr>
-                    <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v2.0/custom-field" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v2.0/custom-field')); ?>"></td></tr>
-                    <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v2.0/member/{id}/custom-fields" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields')); ?>"></td></tr>
-                    <tr><th>Member→Groups Path</th><td><input type="text" name="evg_member_groups_path" class="regular-text" placeholder="/api/v2.0/member/{id}/groups" value="<?php echo esc_attr(get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups')); ?>"></td></tr>
+                    <tr><th>Groups Path</th><td><input type="text" name="evg_groups_path" class="regular-text" placeholder="/api/v3.0/member-group" value="<?php echo esc_attr(get_option('evg_groups_path','/api/v3.0/member-group')); ?>"></td></tr>
+                    <tr><th>Members Path</th><td><input type="text" name="evg_members_path" class="regular-text" placeholder="/api/v3.0/member" value="<?php echo esc_attr(get_option('evg_members_path','/api/v3.0/member')); ?>"></td></tr>
+                    <tr><th>Contact-Details Path</th><td><input type="text" name="evg_contact_details_path" class="regular-text" placeholder="/api/v3.0/contact-details/{id}" value="<?php echo esc_attr(get_option('evg_contact_details_path','/api/v3.0/contact-details/{id}')); ?>"></td></tr>
+                    <tr><th>Custom-Fields Path</th><td><input type="text" name="evg_custom_fields_path" class="regular-text" placeholder="/api/v3.0/custom-field" value="<?php echo esc_attr(get_option('evg_custom_fields_path','/api/v3.0/custom-field')); ?>"></td></tr>
+                    <tr><th>Member→Custom-Fields Path</th><td><input type="text" name="evg_member_custom_fields_path" class="regular-text" placeholder="/api/v3.0/member-custom-field-assignment?user_object={id}" value="<?php echo esc_attr(get_option('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}')); ?>"></td></tr>
+                    <tr><th>Member→Groups Path</th><td><input type="text" name="evg_member_groups_path" class="regular-text" placeholder="/api/v3.0/member-group-assignment?user_object={id}" value="<?php echo esc_attr(get_option('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}')); ?>"></td></tr>
                     <tr>
                         <th>Debug</th>
                         <td>
@@ -449,7 +449,7 @@ class EVG_Admin {
     public function ajax_test_connection(){
         check_ajax_referer('evg_sync'); if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
         $base=rtrim((string)get_option('evg_api_base',''),'/');
-        $members=(string)get_option('evg_members_path','/api/v2.0/member');
+        $members=(string)get_option('evg_members_path','/api/v3.0/member');
         $h=$this->headers();
         $r=evg_http_get($base.$members,$h);
         $c=is_wp_error($r)?'ERR':wp_remote_retrieve_response_code($r);

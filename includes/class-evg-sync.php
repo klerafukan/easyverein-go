@@ -304,9 +304,9 @@ class EVG_Sync {
                 'member_groups'=>1
             ],
             'next'=>[ 
-                'groups'=>$this->normalize_endpoint(get_option('evg_groups_path','/api/v2.0/member-group')),
-                'custom_fields'=>$this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v2.0/custom-field')),
-                'members_list'=>$this->normalize_endpoint(get_option('evg_members_path','/api/v2.0/member'))
+                'groups'=>$this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
+                'custom_fields'=>$this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
+                'members_list'=>$this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member'))
             ],
             'member_ids'=>[],
             'custom_field_types'=>[],
@@ -383,7 +383,7 @@ class EVG_Sync {
             $s['est']['member_custom_fields'] = 1;
         }
         if (!isset($s['next']['custom_fields'])){
-            $s['next']['custom_fields'] = $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v2.0/custom-field'));
+            $s['next']['custom_fields'] = $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field'));
         }
 
         $m_table=$this->table('members');
@@ -550,8 +550,8 @@ class EVG_Sync {
                     if (isset($m['contactDetails']) && is_string($m['contactDetails'])) { $cd = $m['contactDetails']; }
                     elseif (isset($m['contact_details']) && is_string($m['contact_details'])) { $cd = $m['contact_details']; }
                     elseif (isset($m['contactDetails']) && is_array($m['contactDetails']) && isset($m['contactDetails']['href'])) { $cd = $m['contactDetails']['href']; }
-                    elseif (isset($m['contactDetailsId'])) { $cd = '/api/v2.0/contact-details/'.intval($m['contactDetailsId']); }
-                    elseif (isset($m['contactId'])) { $cd = '/api/v2.0/contact-details/'.intval($m['contactId']); }
+                    elseif (isset($m['contactDetailsId'])) { $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']); }
+                    elseif (isset($m['contactId'])) { $cd = '/api/v3.0/contact-details/'.intval($m['contactId']); }
                     if($cd !== '' && strpos($cd,'http')!==0) { $cd = $this->base().(strpos($cd,'/')===0?$cd:'/'.$cd); }
                     if(!$mid) continue;
                     $wpdb->query($wpdb->prepare(
@@ -586,7 +586,7 @@ class EVG_Sync {
                 $cd = $wpdb->get_var( $wpdb->prepare("SELECT contact_details FROM {$m_table} WHERE member_id=%s LIMIT 1", $mid) );
                 if ($cd && strpos($cd,'http')===0) { $durl=$cd; }
                 elseif ($cd) { $durl=$this->base().$cd; }
-                else { $durl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_contact_details_path','/api/v2.0/contact-details/{id}')); }
+                else { $durl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_contact_details_path','/api/v3.0/contact-details/{id}')); }
                 $resp=evg_http_get($durl,$this->headers()); $calls++; $this->rate_sleep();
                 if (!is_wp_error($resp) && ( $c=wp_remote_retrieve_response_code($resp) )>=200 && $c<300){
                     $d=json_decode(wp_remote_retrieve_body($resp),true);
@@ -696,7 +696,7 @@ class EVG_Sync {
                     continue;
                 }
                 $mid=$s['member_ids'][$s['member_index']];
-                $cf_path = get_option('evg_member_custom_fields_path','/api/v2.0/member/{id}/custom-fields');
+                $cf_path = get_option('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
                 $cf_path = str_replace('{id}', rawurlencode($mid), $cf_path);
                 $cf_url = $this->normalize_endpoint($cf_path);
                 $resp=evg_http_get($cf_url,$this->headers()); $calls++; $this->rate_sleep();
@@ -805,7 +805,7 @@ class EVG_Sync {
             elseif($s['phase']==='member_groups'){
                 if ($s['member_index'] >= count($s['member_ids'])) { $s['done']=true; break; }
                 $mid=$s['member_ids'][$s['member_index']];
-                $gurl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_member_groups_path','/api/v2.0/member/{id}/groups'));
+                $gurl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'));
                 $resp=evg_http_get($gurl,$this->headers()); $calls++; $this->rate_sleep();
                 if (!is_wp_error($resp) && ( $c=wp_remote_retrieve_response_code($resp) )>=200 && $c<300){
                     $arr=json_decode(wp_remote_retrieve_body($resp),true); $items=[];
@@ -823,7 +823,9 @@ class EVG_Sync {
                     
                     foreach((array)$items as $g){
                         $gid = null;
-                        // Prefer the real group id from the memberGroup URL (e.g. .../api/v2.0/member-group/266553457)
+                        // Prefer the real group id from the member_group URL (e.g. .../api/v3.0/member-group/266553457)
+                        $memberGroupRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
+                        if (isset($memberGroupRef)) { $g['memberGroup'] = $memberGroupRef; }
                         if (isset($g['memberGroup'])) {
                             if (is_string($g['memberGroup'])) {
                                 $mg = $g['memberGroup'];
