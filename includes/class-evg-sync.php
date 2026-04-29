@@ -593,13 +593,13 @@ class EVG_Sync {
                     if(is_array($d)){
                         $first = isset($d['firstName']) ? $d['firstName'] : (isset($d['first_name']) ? $d['first_name'] : '');
                         $family= isset($d['familyName']) ? $d['familyName'] : (isset($d['lastName']) ? $d['lastName'] : (isset($d['last_name']) ? $d['last_name'] : ''));
-                        $dob   = isset($d['dateOfBirth']) ? $d['dateOfBirth'] : (isset($d['birthDate']) ? $d['birthDate'] : null);
+                        $dob   = isset($d['dateOfBirth']) ? $d['dateOfBirth'] : (isset($d['date_of_birth']) ? $d['date_of_birth'] : (isset($d['birthDate']) ? $d['birthDate'] : null));
                         $age   = isset($d['age']) ? intval($d['age']) : null;
-                        $pemail= isset($d['privateEmail']) ? $d['privateEmail'] : (isset($d['emailPrivate']) ? $d['emailPrivate'] : (isset($d['email']) ? $d['email'] : ''));
+                        $pemail= isset($d['privateEmail']) ? $d['privateEmail'] : (isset($d['email_private']) ? $d['email_private'] : (isset($d['emailPrivate']) ? $d['emailPrivate'] : (isset($d['email']) ? $d['email'] : '')));
                         $zip   = isset($d['zip']) ? $d['zip'] : (isset($d['postalCode']) ? $d['postalCode'] : '');
                         $city  = isset($d['city']) ? $d['city'] : '';
                         $street= isset($d['street']) ? $d['street'] : '';
-                        $addrS = isset($d['addressSuffix']) ? $d['addressSuffix'] : (isset($d['addressAddition']) ? $d['addressAddition'] : '');
+                        $addrS = isset($d['addressSuffix']) ? $d['addressSuffix'] : (isset($d['address_suffix']) ? $d['address_suffix'] : (isset($d['addressAddition']) ? $d['addressAddition'] : ''));
                         $birthYear = null;
                         if (isset($d['birthYear'])) {
                             $birthYear = intval($d['birthYear']);
@@ -629,8 +629,8 @@ class EVG_Sync {
                         }
                         $phones = [];
                         $phoneCandidates = [
-                            'phone','privatePhone','phonePrivate','telephone','telephoneNumber','privateTelephone',
-                            'mobilePhone','mobile','mobilePrivate','mobileTelephone','phoneMobile','phoneHome','homePhone'
+                            'phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber','private_telephone','privateTelephone',
+                            'mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate','mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'
                         ];
                         if (isset($d['phones']) && is_array($d['phones'])) {
                             foreach ($d['phones'] as $p){
@@ -662,7 +662,6 @@ class EVG_Sync {
                         $setParts = [
                             'first_name=%s',
                             'family_name=%s',
-                            'date_of_birth=%s',
                             'age=%d',
                             'email_private=%s',
                             'zip=%s',
@@ -673,7 +672,13 @@ class EVG_Sync {
                             'phone=%s',
                             'updated_at=%s'
                         ];
-                        $params = [$first,$family,$dob,$age,$pemail,$zip,$city,$street,$addrS,$gender,$phone,$now_detail];
+                        $params = [$first,$family,$age,$pemail,$zip,$city,$street,$addrS,$gender,$phone,$now_detail];
+                        if (!empty($dob) && $dob !== '0000-00-00' && $dob !== '0000-00-00 00:00:00'){
+                            $setParts[] = 'date_of_birth=%s';
+                            $params[] = $dob;
+                        } else {
+                            $setParts[] = 'date_of_birth=NULL';
+                        }
                         if ($birthYear !== null){
                             $setParts[] = 'birth_year=%d';
                             $params[] = $birthYear;
