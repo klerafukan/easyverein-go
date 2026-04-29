@@ -282,52 +282,76 @@ class EVG_Sync {
         $wpdb->query('TRUNCATE TABLE '.$this->table('custom_fields'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('member_custom_fields'));
         $wpdb->query('TRUNCATE TABLE '.$this->table('custom_field_values'));
+
         $state=[
-            'phase'=>'groups',
-            'pages'=>['groups'=>0,'custom_fields'=>0,'members_list'=>0],
-            'counts'=>[
-                'groups'=>0,
-                'custom_fields'=>0,
-                'custom_field_values'=>0,
-                'members_list'=>0,
-                'details'=>0,
-                'member_custom_fields'=>0,
-                'member_groups'=>0
+            'phase'  => 'groups',
+            'pages'  => ['groups'=>0,'custom_fields'=>0,'members_list'=>0,'contact_details_bulk'=>0,'member_cf_bulk'=>0,'member_groups_bulk'=>0],
+            'counts' => ['groups'=>0,'custom_fields'=>0,'custom_field_values'=>0,'members_list'=>0,'details'=>0,'member_custom_fields'=>0,'member_groups'=>0],
+            'est'    => ['groups'=>1,'custom_fields'=>1,'custom_field_values'=>1,'members_list'=>1,'details'=>1,'member_custom_fields'=>1,'member_groups'=>1],
+            'next'   => [
+                'groups'               => $this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
+                'custom_fields'        => $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
+                'members_list'         => $this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member')),
+                'contact_details_bulk' => $this->bulk_url_from_path('evg_contact_details_path','/api/v3.0/contact-details/{id}'),
+                'member_cf_bulk'       => $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}'),
+                'member_groups_bulk'   => $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'),
             ],
-            'est'=>[
-                'groups'=>1,
-                'custom_fields'=>1,
-                'custom_field_values'=>1,
-                'members_list'=>1,
-                'details'=>0,
-                'member_custom_fields'=>1,
-                'member_groups'=>1
-            ],
-            'next'=>[ 
-                'groups'=>$this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
-                'custom_fields'=>$this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
-                'members_list'=>$this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member'))
-            ],
-            'member_ids'=>[],
-            'custom_field_types'=>[],
-            'custom_field_labels'=>[],
-            'custom_field_values_seen'=>[],
-            'member_index'=>0,
-            'cap'=>max(0,(int)$cap),
-            'done'=>false
+            'member_ids'              => [],
+            'cd_map'                  => [], // contact_details_id -> member_id
+            'custom_field_types'      => [],
+            'custom_field_labels'     => [],
+            'custom_field_values_seen'=> [],
+            'cap'  => max(0,(int)$cap),
+            'done' => false
         ];
         $this->put_state($state);
     }
 
+    /** Returns bulk base URL by stripping /{id} or ?query={id} from a per-item path */
+    private function bulk_url_from_path($option_key,$default){
+        $path = (string)get_option($option_key,$default);
+        // Strip ?key={id} query-string variants
+        $path = preg_replace('/\?[^?]*\{id\}[^?]*/','', $path);
+        // Strip /{id} path segment
+        $path = preg_replace('/\/\{id\}.*$/','',$path);
+        $path = rtrim($path,'?&/');
+        return $this->normalize_endpoint($path);
+    }
+
+    /** Extract member ID from user_object field (URL or scalar) */
+    private function extract_member_id_from_ref($ref){
+        if ($ref === null) return null;
+        if (is_numeric($ref)) return (string)$ref;
+        if (is_string($ref)){
+            if (preg_match('~/member/([0-9a-zA-Z_-]+)~',$ref,$m)) return $m[1];
+            return $ref !== '' ? $ref : null;
+        }
+        if (is_array($ref)){
+            if (!empty($ref['id']))  return (string)$ref['id'];
+            if (!empty($ref['pk']))  return (string)$ref['pk'];
+            if (!empty($ref['href']) && is_string($ref['href'])){
+                if (preg_match('~/member/([0-9a-zA-Z_-]+)~',$ref['href'],$m)) return $m[1];
+            }
+        }
+        return null;
+    }
+
+    /** Extract contact-details ID from a stored URL or path */
+    private function extract_cd_id($url){
+        if (empty($url)) return null;
+        if (preg_match('~/contact-details?/([0-9a-zA-Z_-]+)~',$url,$m)) return $m[1];
+        return null;
+    }
+
     private function progress($s){
         $weights = [
-            'groups'=>0.10,
-            'custom_fields'=>0.15,
-            'custom_field_values'=>0.10,
-            'members_list'=>0.25,
-            'details'=>0.15,
-            'member_custom_fields'=>0.15,
-            'member_groups'=>0.10
+            'groups'              => 0.05,
+            'custom_fields'       => 0.10,
+            'custom_field_values' => 0.05,
+            'members_list'        => 0.15,
+            'details'             => 0.25,
+            'member_custom_fields'=> 0.25,
+            'member_groups'       => 0.15,
         ];
         $p = 0.0;
         foreach($weights as $k=>$weight){
@@ -336,13 +360,12 @@ class EVG_Sync {
             $p += $weight * min(1.0, $cnt / $est);
         }
         $label  = (isset($s['phase']) ? $s['phase'] : '');
-        $label .= ' – G:' . (isset($s['counts']['groups']) ? (string)$s['counts']['groups'] : '0');
-        $label .= ' CF:' . (isset($s['counts']['custom_fields']) ? (string)$s['counts']['custom_fields'] : '0');
-        $label .= ' CFV:' . (isset($s['counts']['custom_field_values']) ? (string)$s['counts']['custom_field_values'] : '0');
-        $label .= ' M:' . (isset($s['counts']['members_list']) ? (string)$s['counts']['members_list'] : '0');
-        $label .= ' D:' . (isset($s['counts']['details']) ? (string)$s['counts']['details'] : '0');
-        $label .= ' MC:' . (isset($s['counts']['member_custom_fields']) ? (string)$s['counts']['member_custom_fields'] : '0');
-        $label .= ' L:' . (isset($s['counts']['member_groups']) ? (string)$s['counts']['member_groups'] : '0');
+        $label .= ' G:'  . ($s['counts']['groups']               ?? 0);
+        $label .= ' CF:' . ($s['counts']['custom_fields']         ?? 0);
+        $label .= ' M:'  . ($s['counts']['members_list']          ?? 0);
+        $label .= ' D:'  . ($s['counts']['details']               ?? 0);
+        $label .= ' MC:' . ($s['counts']['member_custom_fields']   ?? 0);
+        $label .= ' L:'  . ($s['counts']['member_groups']          ?? 0);
         return ['percent'=>100*$p,'label'=>$label,'done'=>!empty($s['done'])];
     }
 
@@ -352,550 +375,357 @@ class EVG_Sync {
         if (empty($s)) return ['ok'=>false,'summary'=>'Kein aktiver Job'];
         if (!empty($s['done'])) return ['ok'=>true,'done'=>true,'percent'=>100,'label'=>'Fertig'];
 
-        if (!isset($s['custom_field_types']) || !is_array($s['custom_field_types'])){
-            $s['custom_field_types'] = [];
+        // Ensure state keys exist (backwards compat / first tick)
+        foreach (['custom_field_types','custom_field_labels','custom_field_values_seen','cd_map','member_ids'] as $k){
+            if (!isset($s[$k]) || !is_array($s[$k])) $s[$k] = [];
         }
-        if (!isset($s['custom_field_labels']) || !is_array($s['custom_field_labels'])){
-            $s['custom_field_labels'] = [];
+        foreach (['contact_details_bulk','member_cf_bulk','member_groups_bulk'] as $k){
+            if (!isset($s['pages'][$k])) $s['pages'][$k] = 0;
         }
-        if (!isset($s['custom_field_values_seen']) || !is_array($s['custom_field_values_seen'])){
-            $s['custom_field_values_seen'] = [];
+        if (!isset($s['next']['contact_details_bulk'])){
+            $s['next']['contact_details_bulk'] = $this->bulk_url_from_path('evg_contact_details_path','/api/v3.0/contact-details/{id}');
         }
-        if (!isset($s['pages']['custom_fields'])){
-            $s['pages']['custom_fields'] = 0;
+        if (!isset($s['next']['member_cf_bulk'])){
+            $s['next']['member_cf_bulk'] = $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
         }
-        if (!isset($s['counts']['custom_fields'])){
-            $s['counts']['custom_fields'] = 0;
-        }
-        if (!isset($s['counts']['custom_field_values'])){
-            $s['counts']['custom_field_values'] = 0;
-        }
-        if (!isset($s['counts']['member_custom_fields'])){
-            $s['counts']['member_custom_fields'] = 0;
-        }
-        if (!isset($s['est']['custom_fields'])){
-            $s['est']['custom_fields'] = 1;
-        }
-        if (!isset($s['est']['custom_field_values'])){
-            $s['est']['custom_field_values'] = 1;
-        }
-        if (!isset($s['est']['member_custom_fields'])){
-            $s['est']['member_custom_fields'] = 1;
+        if (!isset($s['next']['member_groups_bulk'])){
+            $s['next']['member_groups_bulk'] = $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}');
         }
         if (!isset($s['next']['custom_fields'])){
             $s['next']['custom_fields'] = $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field'));
         }
 
-        $m_table=$this->table('members');
-        $g_table=$this->table('groups');
-        $x_table=$this->table('member_groups');
-        $cf_table=$this->table('custom_fields');
-        $mv_table=$this->table('member_custom_fields');
-        $cv_table=$this->table('custom_field_values');
+        $m_table  = $this->table('members');
+        $g_table  = $this->table('groups');
+        $x_table  = $this->table('member_groups');
+        $cf_table = $this->table('custom_fields');
+        $mv_table = $this->table('member_custom_fields');
+        $cv_table = $this->table('custom_field_values');
 
-        $calls=0; $max=$this->calls_per_tick();
-        while($calls<$max){
-            if($s['phase']==='groups'){
-                $url=$s['next']['groups'];
-                if(!$url || $s['pages']['groups'] >= $this->pages_max()){
-                    $s['phase']='custom_fields';
-                    $s['est']['custom_fields']=max(1,$s['counts']['custom_fields'] ?: 1);
-                    continue;
+        $calls = 0; $max = $this->calls_per_tick();
+
+        while ($calls < $max) {
+
+            // ── PHASE: groups ────────────────────────────────────────────────
+            if ($s['phase'] === 'groups') {
+                $url = $s['next']['groups'];
+                if (!$url || $s['pages']['groups'] >= $this->pages_max()) {
+                    $s['phase'] = 'custom_fields'; continue;
                 }
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
-                $code=wp_remote_retrieve_response_code($resp);
+                $code = wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Groups HTTP '.$code];
-                $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=$this->extract_items_from_payload($body);
-                $next=$this->extract_next_from_payload($body);
-                $now=current_time('mysql',1);
-                foreach((array)$items as $g){
-                    if (!is_array($g)){
-                        continue;
-                    }
-                    $gid = isset($g['id']) ? $g['id'] : (isset($g['groupId']) ? $g['groupId'] : (isset($g['uuid']) ? $g['uuid'] : null));
-                    if(!$gid) continue;
-                    $name = isset($g['name']) ? $g['name'] : (isset($g['title']) ? $g['title'] : (isset($g['groupName']) ? $g['groupName'] : $gid));
-                    $short = isset($g['short']) ? $g['short'] : (isset($g['shortName']) ? $g['shortName'] : '');
-                    $wpdb->query( $wpdb->prepare(
-                        "INSERT INTO $g_table (group_id,name,short,updated_at,raw)
-                         VALUES (%s,%s,%s,%s,%s)
-                         ON DUPLICATE KEY UPDATE
-                           updated_at = VALUES(updated_at),
-                           raw        = IF(VALUES(raw) <> '' AND VALUES(raw) IS NOT NULL, VALUES(raw), raw),
-                           name       = IF(VALUES(name) <> '' AND VALUES(name) IS NOT NULL, VALUES(name), name),
-                           short      = IF(VALUES(short) <> '' AND VALUES(short) IS NOT NULL, VALUES(short), short)",
-                        $gid, ($name ?? ''), ($short ?? ''), $now, wp_json_encode($g, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+                $body  = json_decode(wp_remote_retrieve_body($resp),true);
+                $items = $this->extract_items_from_payload($body);
+                $next  = $this->extract_next_from_payload($body);
+                $now   = current_time('mysql',1);
+                foreach ((array)$items as $g){
+                    if (!is_array($g)) continue;
+                    $gid  = $g['id'] ?? $g['groupId'] ?? $g['uuid'] ?? null;
+                    if (!$gid) continue;
+                    $name  = $g['name']  ?? $g['title']     ?? $g['groupName'] ?? (string)$gid;
+                    $short = $g['short'] ?? $g['shortName'] ?? '';
+                    $wpdb->query($wpdb->prepare(
+                        "INSERT INTO $g_table (group_id,name,short,updated_at,raw) VALUES (%s,%s,%s,%s,%s)
+                         ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at),raw=IF(VALUES(raw)<>'' AND VALUES(raw) IS NOT NULL,VALUES(raw),raw),name=IF(VALUES(name)<>'' AND VALUES(name) IS NOT NULL,VALUES(name),name),short=IF(VALUES(short)<>'' AND VALUES(short) IS NOT NULL,VALUES(short),short)",
+                        $gid, (string)$name, (string)$short, $now,
+                        wp_json_encode($g,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
                     ));
                     $s['counts']['groups']++;
                 }
                 $s['pages']['groups']++;
-                $s['next']['groups']=$this->next_url($next);
-            }
-            elseif($s['phase']==='custom_fields'){
-                $url = isset($s['next']['custom_fields']) ? $s['next']['custom_fields'] : null;
-                if(!$url || $s['pages']['custom_fields'] >= $this->pages_max()){
-                    $s['phase']='members_list';
-                    $s['est']['members_list']=max(1,count($s['member_ids']));
-                    continue;
+                $s['next']['groups'] = $this->next_url($next);
+
+            // ── PHASE: custom_fields ─────────────────────────────────────────
+            } elseif ($s['phase'] === 'custom_fields') {
+                $url = $s['next']['custom_fields'] ?? null;
+                if (!$url || $s['pages']['custom_fields'] >= $this->pages_max()) {
+                    $s['phase'] = 'members_list'; continue;
                 }
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
-                $code=wp_remote_retrieve_response_code($resp);
+                $code = wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Custom-Fields HTTP '.$code];
-                $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=$this->extract_items_from_payload($body);
-                $next=$this->extract_next_from_payload($body);
-                $now=current_time('mysql',1);
-                foreach((array)$items as $field){
-                    if (!is_array($field)){
-                        continue;
-                    }
+                $body  = json_decode(wp_remote_retrieve_body($resp),true);
+                $items = $this->extract_items_from_payload($body);
+                $next  = $this->extract_next_from_payload($body);
+                $now   = current_time('mysql',1);
+                foreach ((array)$items as $field){
+                    if (!is_array($field)) continue;
                     $fid = null;
-                    foreach(['id','uuid','pk','customFieldId','fieldId'] as $fidKey){
-                        if (isset($field[$fidKey]) && $field[$fidKey] !== ''){
-                            if (is_array($field[$fidKey])){
-                                continue;
-                            }
-                            $fid = (string)$field[$fidKey];
-                            break;
-                        }
+                    foreach (['id','uuid','pk','customFieldId','fieldId'] as $fk){
+                        if (!empty($field[$fk]) && !is_array($field[$fk])){ $fid=(string)$field[$fk]; break; }
                     }
-                    if (!$fid && isset($field['url']) && is_string($field['url'])){
-                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$field['url'],$m)){
-                            $fid=$m[1];
-                        }
-                    }
-                    if (!$fid && isset($field['href']) && is_string($field['href'])){
-                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$field['href'],$m)){
-                            $fid=$m[1];
-                        }
-                    }
-                    if(!$fid) continue;
-                    $name = isset($field['name']) ? (string)$field['name'] : '';
-                    $settings_type = isset($field['settings_type']) ? (string)$field['settings_type'] : (isset($field['settingsType']) ? (string)$field['settingsType'] : '');
-                    $kind = isset($field['kind']) ? (string)$field['kind'] : '';
-                    $member_show = !empty($field['member_show']) || !empty($field['memberShow']) ? 1 : 0;
-                    $member_edit = !empty($field['member_edit']) || !empty($field['memberEdit']) ? 1 : 0;
-                    $position = isset($field['position']) ? intval($field['position']) : 0;
-                    $collection = '';
+                    if (!$fid && isset($field['url'])  && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['url'],$mm))  $fid=$mm[1];
+                    if (!$fid && isset($field['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['href'],$mm)) $fid=$mm[1];
+                    if (!$fid) continue;
+                    $name          = (string)($field['name']         ?? '');
+                    $settings_type = (string)($field['settings_type'] ?? $field['settingsType'] ?? '');
+                    $kind          = (string)($field['kind']          ?? '');
+                    $member_show   = (!empty($field['member_show']) || !empty($field['memberShow'])) ? 1 : 0;
+                    $member_edit   = (!empty($field['member_edit']) || !empty($field['memberEdit'])) ? 1 : 0;
+                    $position      = (int)($field['position'] ?? 0);
+                    $collection    = '';
                     if (isset($field['collection'])){
-                        if (is_numeric($field['collection'])){
-                            $collection = (string)$field['collection'];
-                        } elseif (is_string($field['collection'])){
-                            $collection = $field['collection'];
-                        } elseif (is_array($field['collection'])){
-                            if (isset($field['collection']['id'])){
-                                $collection = (string)$field['collection']['id'];
-                            } elseif (isset($field['collection']['pk'])){
-                                $collection = (string)$field['collection']['pk'];
-                            } elseif (isset($field['collection']['href']) && is_string($field['collection']['href'])){
-                                if (preg_match('~/(?:custom-field-collection|custom-field-collections)/([0-9a-zA-Z_-]+)~',$field['collection']['href'],$m)){
-                                    $collection=$m[1];
-                                }
-                            }
+                        $col = $field['collection'];
+                        if (is_numeric($col)) $collection = (string)$col;
+                        elseif (is_string($col)) $collection = $col;
+                        elseif (is_array($col)){
+                            if (isset($col['id']))  $collection = (string)$col['id'];
+                            elseif (isset($col['pk'])) $collection = (string)$col['pk'];
+                            elseif (!empty($col['href']) && preg_match('~/custom-field-collections?/([0-9a-zA-Z_-]+)~',(string)$col['href'],$mm)) $collection=$mm[1];
                         }
                     }
-                    $s['custom_field_types'][(string)$fid] = $settings_type;
-                    $wpdb->replace(
-                        $cf_table,
-                        [
-                            'field_id'     => (string)$fid,
-                            'name'         => $name,
-                            'settings_type'=> $settings_type,
-                            'kind'         => $kind,
-                            'member_show'  => $member_show,
-                            'member_edit'  => $member_edit,
-                            'position'     => $position,
-                            'collection'   => $collection,
-                            'updated_at'   => $now,
-                            'raw'          => wp_json_encode($field, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
-                        ],
-                        ['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']
-                    );
-                    $s['custom_field_labels'][(string)$fid] = $name !== '' ? $name : (string)$fid;
+                    $s['custom_field_types'][$fid]  = $settings_type;
+                    $s['custom_field_labels'][$fid]  = $name !== '' ? $name : $fid;
+                    $wpdb->replace($cf_table,[
+                        'field_id'      => $fid, 'name' => $name, 'settings_type' => $settings_type,
+                        'kind'          => $kind, 'member_show' => $member_show, 'member_edit' => $member_edit,
+                        'position'      => $position, 'collection' => $collection, 'updated_at' => $now,
+                        'raw'           => wp_json_encode($field,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+                    ],['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']);
                     $s['counts']['custom_fields']++;
                 }
                 $s['pages']['custom_fields']++;
-                $s['next']['custom_fields']=$this->next_url($next);
-                if (!$s['next']['custom_fields']){
-                    $s['est']['members_list']=max(1,count($s['member_ids']));
-                }
-            }
-            elseif($s['phase']==='members_list'){
-                $url=$s['next']['members_list'];
-                if(!$url || $s['pages']['members_list'] >= $this->pages_max()){
-                    $s['phase']='details';
-                    $s['member_index']=0;
-                    $s['est']['details']=max(1,count($s['member_ids']));
-                    $s['est']['member_custom_fields']=max(1,count($s['member_ids']));
+                $s['next']['custom_fields'] = $this->next_url($next);
+
+            // ── PHASE: members_list ──────────────────────────────────────────
+            } elseif ($s['phase'] === 'members_list') {
+                $url = $s['next']['members_list'];
+                if (!$url || $s['pages']['members_list'] >= $this->pages_max()) {
+                    $s['phase'] = 'contact_details_bulk';
+                    $s['est']['details'] = max(1, count($s['member_ids']));
+                    $s['est']['member_custom_fields'] = max(1, count($s['member_ids']));
+                    $s['est']['member_groups'] = max(1, count($s['member_ids']));
                     continue;
                 }
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
-                $code=wp_remote_retrieve_response_code($resp);
+                $code = wp_remote_retrieve_response_code($resp);
                 if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Members HTTP '.$code];
-                $body=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=$this->extract_items_from_payload($body);
-                $next=$this->extract_next_from_payload($body);
-                $now=current_time('mysql',1);
-                foreach((array)$items as $m){
-                    if (!is_array($m)){
-                        continue;
-                    }
-                    $mid = isset($m['id']) ? $m['id'] : (isset($m['memberId']) ? $m['memberId'] : (isset($m['uuid']) ? $m['uuid'] : null));
-                    $mno = isset($m['memberNumber']) ? $m['memberNumber'] : (isset($m['membershipNumber']) ? $m['membershipNumber'] : (isset($m['number']) ? $m['number'] : ''));
+                $body  = json_decode(wp_remote_retrieve_body($resp),true);
+                $items = $this->extract_items_from_payload($body);
+                $next  = $this->extract_next_from_payload($body);
+                $now   = current_time('mysql',1);
+                foreach ((array)$items as $m){
+                    if (!is_array($m)) continue;
+                    $mid = $m['id'] ?? $m['memberId'] ?? $m['uuid'] ?? null;
+                    if (!$mid) continue;
+                    $mid = (string)$mid;
+                    $mno = $m['memberNumber'] ?? $m['membershipNumber'] ?? $m['number'] ?? '';
                     $cd  = '';
-                    if (isset($m['contactDetails']) && is_string($m['contactDetails'])) { $cd = $m['contactDetails']; }
-                    elseif (isset($m['contact_details']) && is_string($m['contact_details'])) { $cd = $m['contact_details']; }
-                    elseif (isset($m['contactDetails']) && is_array($m['contactDetails']) && isset($m['contactDetails']['href'])) { $cd = $m['contactDetails']['href']; }
-                    elseif (isset($m['contactDetailsId'])) { $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']); }
-                    elseif (isset($m['contactId'])) { $cd = '/api/v3.0/contact-details/'.intval($m['contactId']); }
-                    if($cd !== '' && strpos($cd,'http')!==0) { $cd = $this->base().(strpos($cd,'/')===0?$cd:'/'.$cd); }
-                    if(!$mid) continue;
+                    if (!empty($m['contactDetails']) && is_string($m['contactDetails']))          $cd = $m['contactDetails'];
+                    elseif (!empty($m['contact_details']) && is_string($m['contact_details']))    $cd = $m['contact_details'];
+                    elseif (isset($m['contactDetails']['href']))                                   $cd = (string)$m['contactDetails']['href'];
+                    elseif (isset($m['contactDetailsId']))  $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']);
+                    elseif (isset($m['contactId']))         $cd = '/api/v3.0/contact-details/'.intval($m['contactId']);
+                    if ($cd !== '' && strpos($cd,'http') !== 0) $cd = $this->base().(strpos($cd,'/')===0 ? $cd : '/'.$cd);
+                    // Build cd_map: CD-ID → member_id
+                    $cd_id = $this->extract_cd_id($cd);
+                    if ($cd_id) $s['cd_map'][$cd_id] = $mid;
                     $wpdb->query($wpdb->prepare(
-                        "INSERT INTO {$m_table} (member_id, member_number, contact_details, updated_at)
-                         VALUES (%s,%s,%s,%s)
-                         ON DUPLICATE KEY UPDATE member_number=VALUES(member_number),
-                                                 contact_details=VALUES(contact_details),
-                                                 updated_at=VALUES(updated_at)",
-                        $mid, $mno, $cd, $now
+                        "INSERT INTO {$m_table} (member_id,member_number,contact_details,updated_at) VALUES (%s,%s,%s,%s)
+                         ON DUPLICATE KEY UPDATE member_number=VALUES(member_number),contact_details=VALUES(contact_details),updated_at=VALUES(updated_at)",
+                        $mid, (string)$mno, $cd, $now
                     ));
-                    $s['member_ids'][]=(string)$mid;
+                    $s['member_ids'][] = $mid;
                     $s['counts']['members_list']++;
-                    if($s['cap']>0 && count($s['member_ids']) >= $s['cap']) { $next=null; break; }
+                    if ($s['cap'] > 0 && count($s['member_ids']) >= $s['cap']) { $next = null; break; }
                 }
                 $s['pages']['members_list']++;
-                $s['next']['members_list']=$this->next_url($next);
-                if($s['cap']>0 && count($s['member_ids']) >= $s['cap']){
-                    $s['phase']='details';
-                    $s['member_index']=0;
-                    $s['est']['details']=count($s['member_ids']);
-                    $s['est']['member_custom_fields']=count($s['member_ids']);
+                $s['next']['members_list'] = $this->next_url($next);
+                if ($s['cap'] > 0 && count($s['member_ids']) >= $s['cap']){
+                    $s['phase'] = 'contact_details_bulk';
+                    $s['est']['details'] = count($s['member_ids']);
+                    $s['est']['member_custom_fields'] = count($s['member_ids']);
+                    $s['est']['member_groups'] = count($s['member_ids']);
                 }
-            }
-            elseif($s['phase']==='details'){
-                if ($s['member_index'] >= count($s['member_ids'])){
-                    $s['phase']='member_custom_fields';
-                    $s['member_index']=0;
-                    $s['est']['member_custom_fields']=max(1,count($s['member_ids']));
-                    continue;
+
+            // ── PHASE: contact_details_bulk ──────────────────────────────────
+            } elseif ($s['phase'] === 'contact_details_bulk') {
+                $url = $s['next']['contact_details_bulk'];
+                if (!$url || $s['pages']['contact_details_bulk'] >= $this->pages_max()) {
+                    $s['phase'] = 'member_cf_bulk'; continue;
                 }
-                $mid=$s['member_ids'][$s['member_index']];
-                $cd = $wpdb->get_var( $wpdb->prepare("SELECT contact_details FROM {$m_table} WHERE member_id=%s LIMIT 1", $mid) );
-                if ($cd && strpos($cd,'http')===0) { $durl=$cd; }
-                elseif ($cd) { $durl=$this->base().$cd; }
-                else { $durl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_contact_details_path','/api/v3.0/contact-details/{id}')); }
-                $resp=evg_http_get($durl,$this->headers()); $calls++; $this->rate_sleep();
-                if (!is_wp_error($resp) && ( $c=wp_remote_retrieve_response_code($resp) )>=200 && $c<300){
-                    $d=json_decode(wp_remote_retrieve_body($resp),true);
-                    if(is_array($d)){
-                        $first = isset($d['firstName']) ? $d['firstName'] : (isset($d['first_name']) ? $d['first_name'] : '');
-                        $family= isset($d['familyName']) ? $d['familyName'] : (isset($d['lastName']) ? $d['lastName'] : (isset($d['last_name']) ? $d['last_name'] : ''));
-                        $dob   = isset($d['dateOfBirth']) ? $d['dateOfBirth'] : (isset($d['date_of_birth']) ? $d['date_of_birth'] : (isset($d['birthDate']) ? $d['birthDate'] : null));
-                        $age   = isset($d['age']) ? intval($d['age']) : null;
-                        $pemail= isset($d['privateEmail']) ? $d['privateEmail'] : (isset($d['email_private']) ? $d['email_private'] : (isset($d['emailPrivate']) ? $d['emailPrivate'] : (isset($d['email']) ? $d['email'] : '')));
-                        $zip   = isset($d['zip']) ? $d['zip'] : (isset($d['postalCode']) ? $d['postalCode'] : '');
-                        $city  = isset($d['city']) ? $d['city'] : '';
-                        $street= isset($d['street']) ? $d['street'] : '';
-                        $addrS = isset($d['addressSuffix']) ? $d['addressSuffix'] : (isset($d['address_suffix']) ? $d['address_suffix'] : (isset($d['addressAddition']) ? $d['addressAddition'] : ''));
-                        $birthYear = null;
-                        if (isset($d['birthYear'])) {
-                            $birthYear = intval($d['birthYear']);
-                        } elseif (isset($d['yearOfBirth'])) {
-                            $birthYear = intval($d['yearOfBirth']);
-                        } elseif (!empty($dob) && is_string($dob) && preg_match('/^\d{4}/', $dob, $mY)) {
-                            $birthYear = intval($mY[0]);
-                        }
-                        if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y')) + 1)) {
-                            $birthYear = null;
-                        }
-                        $gender = '';
-                        if (!empty($d['salutation'])) {
-                            $gender = is_array($d['salutation'])
-                                ? implode(', ', array_filter(array_map('trim', (array) $d['salutation'])))
-                                : trim((string) $d['salutation']);
-                        }
-                        $genderCandidates = ['gender','sex','sexType'];
-                        foreach ($genderCandidates as $gKey){
-                            if (!empty($d[$gKey])) { 
-                                $gender = is_array($d[$gKey]) ? implode(', ', array_filter(array_map('trim',(array)$d[$gKey]))) : trim((string)$d[$gKey]);
-                                break;
-                            }
-                        }
-                        if (strlen($gender) > 32) {
-                            $gender = substr($gender, 0, 32);
-                        }
-                        $phones = [];
-                        $phoneCandidates = [
-                            'phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber','private_telephone','privateTelephone',
-                            'mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate','mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'
-                        ];
-                        if (isset($d['phones']) && is_array($d['phones'])) {
-                            foreach ($d['phones'] as $p){
-                                if (is_string($p) && trim($p) !== '') $phones[] = trim($p);
-                                if (is_array($p)){
-                                    foreach ($p as $sub){
-                                        if (is_string($sub) && trim($sub) !== '') $phones[] = trim($sub);
-                                    }
-                                }
-                            }
-                        }
-                        foreach ($phoneCandidates as $pKey){
-                            if (!empty($d[$pKey])) {
-                                if (is_array($d[$pKey])){
-                                    foreach ($d[$pKey] as $sub){
-                                        if (is_string($sub) && trim($sub) !== '') $phones[] = trim($sub);
-                                    }
-                                } else {
-                                    $phones[] = trim((string)$d[$pKey]);
-                                }
-                            }
-                        }
-                        $phones = array_values(array_filter(array_unique($phones)));
-                        $phone = implode(', ', array_slice($phones, 0, 3));
-                        if (strlen($phone) > 120) {
-                            $phone = substr($phone, 0, 120);
-                        }
-                        $now_detail = current_time('mysql',1);
-                        $setParts = [
-                            'first_name=%s',
-                            'family_name=%s',
-                            'age=%d',
-                            'email_private=%s',
-                            'zip=%s',
-                            'city=%s',
-                            'street=%s',
-                            'address_suffix=%s',
-                            'gender=%s',
-                            'phone=%s',
-                            'updated_at=%s'
-                        ];
-                        $params = [$first,$family,$age,$pemail,$zip,$city,$street,$addrS,$gender,$phone,$now_detail];
-                        if (!empty($dob) && $dob !== '0000-00-00' && $dob !== '0000-00-00 00:00:00'){
-                            $setParts[] = 'date_of_birth=%s';
-                            $params[] = $dob;
-                        } else {
-                            $setParts[] = 'date_of_birth=NULL';
-                        }
-                        if ($birthYear !== null){
-                            $setParts[] = 'birth_year=%d';
-                            $params[] = $birthYear;
-                        } else {
-                            $setParts[] = 'birth_year=NULL';
-                        }
-                        $params[] = $mid;
-                        $sql = "UPDATE {$m_table} SET ".implode(',', $setParts)." WHERE member_id=%s";
-                        $wpdb->query($wpdb->prepare($sql, $params));
-                    }
-                    $s['counts']['details']++;
-                }
-                $s['member_index']++;
-            }
-            elseif($s['phase']==='member_custom_fields'){
-                if ($s['member_index'] >= count($s['member_ids'])){
-                    $s['phase']='member_groups';
-                    $s['member_index']=0;
-                    $s['est']['member_groups']=max(1,count($s['member_ids']));
-                    continue;
-                }
-                $mid=$s['member_ids'][$s['member_index']];
-                $cf_path = get_option('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
-                $cf_path = str_replace('{id}', rawurlencode($mid), $cf_path);
-                $cf_url = $this->normalize_endpoint($cf_path);
-                $resp=evg_http_get($cf_url,$this->headers()); $calls++; $this->rate_sleep();
+                $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
                 $code = wp_remote_retrieve_response_code($resp);
-                if ($code<200 || $code>=300) return ['ok'=>false,'summary'=>'Member-Custom-Fields HTTP '.$code];
-                $payload=json_decode(wp_remote_retrieve_body($resp),true);
-                $items=$this->extract_items_from_payload($payload);
-                $now=current_time('mysql',1);
-                foreach((array)$items as $entry){
-                    if (!is_array($entry)){
-                        continue;
+                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Contact-Details HTTP '.$code];
+                $body  = json_decode(wp_remote_retrieve_body($resp),true);
+                $items = $this->extract_items_from_payload($body);
+                $next  = $this->extract_next_from_payload($body);
+                $now   = current_time('mysql',1);
+                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
+                foreach ((array)$items as $d){
+                    if (!is_array($d)) continue;
+                    // Find corresponding member_id via cd_map
+                    $cd_id = isset($d['id']) ? (string)$d['id'] : null;
+                    $mid   = $cd_id && isset($s['cd_map'][$cd_id]) ? $s['cd_map'][$cd_id] : null;
+                    if (!$mid) continue;
+                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
+                    // Parse contact-details fields (v3 snake_case + v2 camelCase fallbacks)
+                    $first  = $d['firstName']  ?? $d['first_name']  ?? '';
+                    $family = $d['familyName']  ?? $d['lastName']    ?? $d['last_name']    ?? '';
+                    $dob    = $d['dateOfBirth'] ?? $d['date_of_birth'] ?? $d['birthDate'] ?? null;
+                    $age    = isset($d['age']) ? intval($d['age']) : null;
+                    $pemail = $d['privateEmail'] ?? $d['email_private'] ?? $d['emailPrivate'] ?? $d['email'] ?? '';
+                    $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
+                    $city   = $d['city']   ?? '';
+                    $street = $d['street'] ?? '';
+                    $addrS  = $d['addressSuffix'] ?? $d['address_suffix'] ?? $d['addressAddition'] ?? '';
+                    $birthYear = null;
+                    if (isset($d['birthYear']))     $birthYear = intval($d['birthYear']);
+                    elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
+                    elseif (!empty($dob) && preg_match('/^\d{4}/',(string)$dob,$mY)) $birthYear = intval($mY[0]);
+                    if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y'))+1)) $birthYear = null;
+                    $gender = '';
+                    if (!empty($d['salutation'])){
+                        $gender = is_array($d['salutation']) ? implode(', ',array_filter(array_map('trim',(array)$d['salutation']))) : trim((string)$d['salutation']);
                     }
-                    $field_id=null;
-                    $fieldRef=$entry['customField']??$entry['custom_field']??null;
-                    if (is_string($fieldRef) && $fieldRef!==''){
-                        if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$fieldRef,$m)){
-                            $field_id=$m[1];
-                        } else {
-                            $field_id=$fieldRef;
+                    foreach (['gender','sex','sexType'] as $gk){
+                        if (!empty($d[$gk])){
+                            $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]);
+                            break;
                         }
+                    }
+                    if (strlen($gender) > 32) $gender = substr($gender,0,32);
+                    $phones = [];
+                    $pKeys = ['phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
+                              'private_telephone','privateTelephone','mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate',
+                              'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
+                    if (isset($d['phones']) && is_array($d['phones'])){
+                        foreach ($d['phones'] as $p){
+                            if (is_string($p) && trim($p)!=='') $phones[]=trim($p);
+                            if (is_array($p)) foreach ($p as $sub) if (is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub);
+                        }
+                    }
+                    foreach ($pKeys as $pk){ if (!empty($d[$pk])){ if (is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
+                    $phones = array_values(array_filter(array_unique($phones)));
+                    $phone  = substr(implode(', ',array_slice($phones,0,3)),0,120);
+                    $setParts = ['first_name=%s','family_name=%s','age=%d','email_private=%s','zip=%s','city=%s','street=%s','address_suffix=%s','gender=%s','phone=%s','updated_at=%s'];
+                    $params   = [$first,$family,$age,$pemail,$zip,$city,$street,(string)$addrS,$gender,$phone,$now];
+                    if (!empty($dob) && $dob !== '0000-00-00' && $dob !== '0000-00-00 00:00:00'){ $setParts[]='date_of_birth=%s'; $params[]=$dob; } else { $setParts[]='date_of_birth=NULL'; }
+                    if ($birthYear !== null){ $setParts[]='birth_year=%d'; $params[]=$birthYear; } else { $setParts[]='birth_year=NULL'; }
+                    $params[] = $mid;
+                    $wpdb->query($wpdb->prepare("UPDATE {$m_table} SET ".implode(',',$setParts)." WHERE member_id=%s", $params));
+                    $s['counts']['details']++;
+                }
+                $s['pages']['contact_details_bulk']++;
+                $s['next']['contact_details_bulk'] = $this->next_url($next);
+
+            // ── PHASE: member_cf_bulk ────────────────────────────────────────
+            } elseif ($s['phase'] === 'member_cf_bulk') {
+                $url = $s['next']['member_cf_bulk'];
+                if (!$url || $s['pages']['member_cf_bulk'] >= $this->pages_max()) {
+                    $s['phase'] = 'member_groups_bulk'; continue;
+                }
+                $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
+                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                $code = wp_remote_retrieve_response_code($resp);
+                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Member-CF-Bulk HTTP '.$code];
+                $payload = json_decode(wp_remote_retrieve_body($resp),true);
+                $items   = $this->extract_items_from_payload($payload);
+                $next    = $this->extract_next_from_payload($payload);
+                $now     = current_time('mysql',1);
+                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
+                foreach ((array)$items as $entry){
+                    if (!is_array($entry)) continue;
+                    $mid = $this->extract_member_id_from_ref($entry['user_object'] ?? null);
+                    if (!$mid) continue;
+                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
+                    // field_id
+                    $field_id = null;
+                    $fieldRef = $entry['customField'] ?? $entry['custom_field'] ?? null;
+                    if (is_string($fieldRef) && $fieldRef !== ''){
+                        if (preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',$fieldRef,$mm)) $field_id=$mm[1]; else $field_id=$fieldRef;
                     } elseif (is_array($fieldRef)){
-                        if (!empty($fieldRef['id'])){
-                            $field_id=(string)$fieldRef['id'];
-                        } elseif (!empty($fieldRef['pk'])){
-                            $field_id=(string)$fieldRef['pk'];
-                        } elseif (!empty($fieldRef['href']) && is_string($fieldRef['href'])){
-                            if (preg_match('~/(?:custom-field|custom-fields?)/([0-9a-zA-Z_-]+)~',$fieldRef['href'],$m)){
-                                $field_id=$m[1];
-                            }
-                        }
+                        if (!empty($fieldRef['id']))  $field_id=(string)$fieldRef['id'];
+                        elseif (!empty($fieldRef['pk'])) $field_id=(string)$fieldRef['pk'];
+                        elseif (!empty($fieldRef['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$fieldRef['href'],$mm)) $field_id=$mm[1];
                     }
-                    if (!$field_id && isset($entry['customFieldId'])){
-                        $field_id=(string)$entry['customFieldId'];
-                    }
-                    if (!$field_id && isset($entry['fieldId'])){
-                        $field_id=(string)$entry['fieldId'];
-                    }
+                    if (!$field_id) $field_id = $entry['customFieldId'] ?? $entry['fieldId'] ?? null;
+                    if (!$field_id) $field_id = isset($entry['id']) ? (string)$entry['id'] : null;
                     if (!$field_id) continue;
+                    $field_id = (string)$field_id;
+                    // value
                     $value_source = null;
-                    if (array_key_exists('value',$entry)){
-                        $value_source = $entry['value'];
-                    } elseif (array_key_exists('valueText',$entry)){
-                        $value_source = $entry['valueText'];
-                    } elseif (array_key_exists('value_text',$entry)){
-                        $value_source = $entry['value_text'];
+                    if (array_key_exists('value',$entry))       $value_source = $entry['value'];
+                    elseif (array_key_exists('valueText',$entry)) $value_source = $entry['valueText'];
+                    elseif (array_key_exists('value_text',$entry)) $value_source = $entry['value_text'];
+                    if (($value_source === null||$value_source===''||$value_source===[]) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])) $value_source=$entry['selectOptions'];
+                    $prepared = $this->prepare_custom_field_value($field_id,$value_source);
+                    if (!$prepared) continue;
+                    // field_label
+                    $field_label = $s['custom_field_labels'][$field_id] ?? '';
+                    if ($field_label === ''){
+                        $field_label = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM {$cf_table} WHERE field_id=%s LIMIT 1",$field_id)) ?: $field_id);
+                        $s['custom_field_labels'][$field_id] = $field_label;
                     }
-                    if (($value_source === null || $value_source === '' || $value_source === []) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])){
-                        $value_source = $entry['selectOptions'];
-                    }
-                    $prepared = $this->prepare_custom_field_value((string)$field_id, $value_source);
-                    if (!$prepared){
-                        continue;
-                    }
-                    $field_label = '';
-                    if (isset($s['custom_field_labels'][(string)$field_id]) && $s['custom_field_labels'][(string)$field_id] !== ''){
-                        $field_label = $s['custom_field_labels'][(string)$field_id];
-                    } else {
-                        $fetched_label = $wpdb->get_var($wpdb->prepare("SELECT name FROM {$cf_table} WHERE field_id=%s LIMIT 1", (string)$field_id));
-                        if ($fetched_label === null || $fetched_label === ''){
-                            $field_label = (string)$field_id;
-                        } else {
-                            $field_label = (string)$fetched_label;
-                        }
-                        $s['custom_field_labels'][(string)$field_id] = $field_label;
-                    }
-
-                    $entry_raw = wp_json_encode($entry, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                    $wpdb->replace(
-                        $mv_table,
-                        [
-                            'member_id'  => $mid,
-                            'field_id'   => (string)$field_id,
-                            'value_hash' => $prepared['hash'],
-                            'value_text' => $prepared['label'],
-                            'updated_at' => $now,
-                            'raw'        => $entry_raw
-                        ],
-                        ['%s','%s','%s','%s','%s','%s']
-                    );
+                    $entry_raw = wp_json_encode($entry,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+                    $wpdb->replace($mv_table,['member_id'=>$mid,'field_id'=>$field_id,'value_hash'=>$prepared['hash'],'value_text'=>$prepared['label'],'updated_at'=>$now,'raw'=>$entry_raw],['%s','%s','%s','%s','%s','%s']);
                     $s['counts']['member_custom_fields']++;
-
-                    $cv_key = (string)$field_id.'|'.$prepared['hash'];
-                    $wpdb->replace(
-                        $cv_table,
-                        [
-                            'field_id'    => (string)$field_id,
-                            'value_hash'  => $prepared['hash'],
-                            'field_label' => $field_label !== '' ? $field_label : (string)$field_id,
-                            'value_label' => $prepared['label'],
-                            'value_raw'   => $prepared['raw'],
-                            'updated_at'  => $now
-                        ],
-                        ['%s','%s','%s','%s','%s','%s']
-                    );
+                    $cv_key = $field_id.'|'.$prepared['hash'];
+                    $wpdb->replace($cv_table,['field_id'=>$field_id,'value_hash'=>$prepared['hash'],'field_label'=>$field_label,'value_label'=>$prepared['label'],'value_raw'=>$prepared['raw'],'updated_at'=>$now],['%s','%s','%s','%s','%s','%s']);
                     if (!isset($s['custom_field_values_seen'][$cv_key])){
-                        $s['custom_field_values_seen'][$cv_key] = true;
+                        $s['custom_field_values_seen'][$cv_key]=true;
                         $s['counts']['custom_field_values']++;
-                        if ($s['counts']['custom_field_values'] > $s['est']['custom_field_values']){
-                            $s['est']['custom_field_values'] = $s['counts']['custom_field_values'];
-                        }
+                        if ($s['counts']['custom_field_values'] > ($s['est']['custom_field_values']??1)) $s['est']['custom_field_values']=$s['counts']['custom_field_values'];
                     }
                 }
-                $s['member_index']++;
-            }
-            elseif($s['phase']==='member_groups'){
-                if ($s['member_index'] >= count($s['member_ids'])) { $s['done']=true; break; }
-                $mid=$s['member_ids'][$s['member_index']];
-                $gurl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'));
-                $resp=evg_http_get($gurl,$this->headers()); $calls++; $this->rate_sleep();
-                if (!is_wp_error($resp) && ( $c=wp_remote_retrieve_response_code($resp) )>=200 && $c<300){
-                    $arr=json_decode(wp_remote_retrieve_body($resp),true); $items=[];
-                    if(is_array($arr)){
-                        if(array_keys($arr)===range(0,count($arr)-1)) $items=$arr; else $items=$arr['results']??$arr['data']??$arr['items']??[];
-                    }
-                    $now=current_time('mysql',1);
-                    
-                    // Get member's name for speaking column
-                    $member_name = '';
-                    $member_data = $wpdb->get_row($wpdb->prepare("SELECT first_name, family_name FROM $m_table WHERE member_id = %s", $mid), ARRAY_A);
-                    if ($member_data) {
-                        $member_name = trim(($member_data['first_name'] ?? '') . ' ' . ($member_data['family_name'] ?? ''));
-                    }
-                    
-                    foreach((array)$items as $g){
-                        $gid = null;
-                        // Prefer the real group id from the member_group URL (e.g. .../api/v3.0/member-group/266553457)
-                        $memberGroupRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
-                        if (isset($memberGroupRef)) { $g['memberGroup'] = $memberGroupRef; }
-                        if (isset($g['memberGroup'])) {
-                            if (is_string($g['memberGroup'])) {
-                                $mg = $g['memberGroup'];
-                                if (preg_match('~/(?:member-group|groups?)/([0-9]+)~', $mg, $m)) {
-                                    $gid = $m[1];
-                                } else {
-                                    // try last path segment as numeric
-                                    $tail = parse_url($mg, PHP_URL_PATH);
-                                    if ($tail) {
-                                        $parts = explode('/', trim($tail,'/'));
-                                        $last  = end($parts);
-                                        if (ctype_digit($last)) $gid = $last;
-                                    }
-                                }
-                            } elseif (is_array($g['memberGroup'])) {
-                                // if API returns an object with id/href
-                                if (!empty($g['memberGroup']['id']) && is_numeric($g['memberGroup']['id'])) {
-                                    $gid = (string)$g['memberGroup']['id'];
-                                } elseif (!empty($g['memberGroup']['href']) && is_string($g['memberGroup']['href'])) {
-                                    $mg = $g['memberGroup']['href'];
-                                    if (preg_match('~/(?:member-group|groups?)/([0-9]+)~', $mg, $m)) {
-                                        $gid = $m[1];
-                                    }
-                                }
-                            }
-                        }
-                        // Conservative fallbacks (do NOT use relation id)
-                        if (!$gid && isset($g['groupId']) && is_numeric($g['groupId'])) {
-                            $gid = (string)$g['groupId'];
-                        }
-                        if (!$gid && isset($g['uuid']) && is_numeric($g['uuid'])) {
-                            $gid = (string)$g['uuid'];
-                        }
-                        if(!$gid) continue;
+                $s['pages']['member_cf_bulk']++;
+                $s['next']['member_cf_bulk'] = $this->next_url($next);
 
-                        // Only read the group name from local evg_groups; do NOT write to evg_groups here
-                        $group_name_local = $wpdb->get_var(
-                            $wpdb->prepare(
-                                "SELECT name FROM $g_table WHERE group_id = %s LIMIT 1",
-                                $gid
-                            )
-                        );
-                        if ($group_name_local === null) {
-                            $group_name_local = '';
-                        }
-
-                        // Create/refresh member->group relationship using resolved group_name
-                        $wpdb->replace(
-                            $x_table,
-                            [
-                                'member_id'   => $mid,
-                                'group_id'    => $gid,
-                                'member_name' => $member_name,
-                                'group_name'  => $group_name_local,
-                                'assigned_at' => $now
-                            ],
-                            ['%s','%s','%s','%s','%s']
-                        );
-                        $s['counts']['member_groups']++;
-                    }
+            // ── PHASE: member_groups_bulk ────────────────────────────────────
+            } elseif ($s['phase'] === 'member_groups_bulk') {
+                $url = $s['next']['member_groups_bulk'];
+                if (!$url || $s['pages']['member_groups_bulk'] >= $this->pages_max()) {
+                    $s['done'] = true; break;
                 }
-                $s['member_index']++;
-            }
-            else {
-                return ['ok'=>false,'summary'=>'Unbekannte Phase: '.(isset($s['phase'])?$s['phase']:'<none>')];
+                $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
+                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                $code = wp_remote_retrieve_response_code($resp);
+                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Member-Groups-Bulk HTTP '.$code];
+                $arr  = json_decode(wp_remote_retrieve_body($resp),true);
+                $items = $this->extract_items_from_payload($arr);
+                $next  = $this->extract_next_from_payload($arr);
+                $now   = current_time('mysql',1);
+                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
+                // Pre-cache member names for members we'll encounter
+                $name_cache = [];
+                foreach ((array)$items as $g){
+                    if (!is_array($g)) continue;
+                    $mid = $this->extract_member_id_from_ref($g['user_object'] ?? null);
+                    if (!$mid) continue;
+                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
+                    // group id
+                    $gid = null;
+                    $mgRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
+                    if (is_string($mgRef)){
+                        if (preg_match('~/(?:member-group|groups?)/([0-9]+)~',$mgRef,$mm)) $gid=$mm[1];
+                        else { $tail=parse_url($mgRef,PHP_URL_PATH); if($tail){ $parts=explode('/',trim($tail,'/')); $last=end($parts); if(ctype_digit($last)) $gid=$last; } }
+                    } elseif (is_array($mgRef)){
+                        if (!empty($mgRef['id']) && is_numeric($mgRef['id'])) $gid=(string)$mgRef['id'];
+                        elseif (!empty($mgRef['href']) && preg_match('~/(?:member-group|groups?)/([0-9]+)~',(string)$mgRef['href'],$mm)) $gid=$mm[1];
+                    }
+                    if (!$gid && isset($g['groupId']) && is_numeric($g['groupId'])) $gid=(string)$g['groupId'];
+                    if (!$gid) continue;
+                    // member name (cached)
+                    if (!isset($name_cache[$mid])){
+                        $row = $wpdb->get_row($wpdb->prepare("SELECT first_name,family_name FROM $m_table WHERE member_id=%s LIMIT 1",$mid),ARRAY_A);
+                        $name_cache[$mid] = $row ? trim(($row['first_name']??'').' '.($row['family_name']??'')) : '';
+                    }
+                    // group name from local groups table
+                    $group_name = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM $g_table WHERE group_id=%s LIMIT 1",$gid)) ?? '');
+                    $wpdb->replace($x_table,['member_id'=>$mid,'group_id'=>$gid,'member_name'=>$name_cache[$mid],'group_name'=>$group_name,'assigned_at'=>$now],['%s','%s','%s','%s','%s']);
+                    $s['counts']['member_groups']++;
+                }
+                $s['pages']['member_groups_bulk']++;
+                $s['next']['member_groups_bulk'] = $this->next_url($next);
+                if (!$s['next']['member_groups_bulk']) { $s['done'] = true; break; }
+
+            } else {
+                return ['ok'=>false,'summary'=>'Unbekannte Phase: '.($s['phase']??'none')];
             }
         }
         $this->put_state($s);
