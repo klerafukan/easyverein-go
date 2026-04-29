@@ -37,12 +37,12 @@ class EVG_Plugin {
             'evg_api_base'     => 'https://easyverein.com',
             'evg_api_key'      => '',
             'evg_auth_header'  => 'Authorization Bearer',
-            'evg_groups_path'  => '/api/v2.0/member-group',
-            'evg_members_path' => '/api/v2.0/member',
-            'evg_contact_details_path' => '/api/v2.0/contact-details/{id}',
-            'evg_member_groups_path'   => '/api/v2.0/member/{id}/groups',
-            'evg_custom_fields_path'   => '/api/v2.0/custom-field',
-            'evg_member_custom_fields_path' => '/api/v2.0/member/{id}/custom-fields',
+            'evg_groups_path'  => '/api/v3.0/member-group',
+            'evg_members_path' => '/api/v3.0/member',
+            'evg_contact_details_path' => '/api/v3.0/contact-details/{id}',
+            'evg_member_groups_path'   => '/api/v3.0/member-group-assignment?user_object={id}',
+            'evg_custom_fields_path'   => '/api/v3.0/custom-field',
+            'evg_member_custom_fields_path' => '/api/v3.0/member-custom-field-assignment?user_object={id}',
             'evg_columns'      => ['first_name','family_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','groups'],
             'evg_debug'        => 1,
             'evg_sync_next_pages_max' => 100,
@@ -63,10 +63,31 @@ class EVG_Plugin {
     public function on_deactivate(){
         $this->clear_cron();
     }
+    private function migrate_api_paths_to_v3(){
+        $map = [
+            'evg_groups_path'               => ['/api/v2.0/member-group'                => '/api/v3.0/member-group'],
+            'evg_members_path'              => ['/api/v2.0/member'                       => '/api/v3.0/member'],
+            'evg_contact_details_path'      => ['/api/v2.0/contact-details/{id}'         => '/api/v3.0/contact-details/{id}'],
+            'evg_custom_fields_path'        => ['/api/v2.0/custom-field'                 => '/api/v3.0/custom-field'],
+            'evg_member_custom_fields_path' => ['/api/v2.0/member/{id}/custom-fields'    => '/api/v3.0/member-custom-field-assignment?user_object={id}'],
+            'evg_member_groups_path'        => ['/api/v2.0/member/{id}/groups'           => '/api/v3.0/member-group-assignment?user_object={id}'],
+        ];
+        foreach ($map as $option => $replacements) {
+            $current = get_option($option, null);
+            if (!is_string($current)) continue;
+            foreach ($replacements as $old => $new) {
+                if ($current === $old) {
+                    update_option($option, $new);
+                    break;
+                }
+            }
+        }
+    }
+
     private function ensure_runtime_option_defaults(){
         $defaults = [
-            'evg_custom_fields_path'         => '/api/v2.0/custom-field',
-            'evg_member_custom_fields_path'  => '/api/v2.0/member/{id}/custom-fields',
+            'evg_custom_fields_path'         => '/api/v3.0/custom-field',
+            'evg_member_custom_fields_path'  => '/api/v3.0/member-custom-field-assignment?user_object={id}',
             'evg_manual_sync_table_prefix'   => 'evg',
             'evg_nightly_sync_table_prefix'  => self::NIGHTLY_TABLE_PREFIX,
         ];
@@ -82,16 +103,16 @@ class EVG_Plugin {
             }
             $normalized = $current;
             if (strpos($normalized, 'custom-field?kind=E') !== false) {
-                $normalized = '/api/v2.0/custom-field';
+                $normalized = '/api/v3.0/custom-field';
             }
             if (strpos($normalized, 'custom-fields?limit=100') !== false) {
-                $normalized = '/api/v2.0/member/{id}/custom-fields';
+                $normalized = '/api/v3.0/member-custom-field-assignment?user_object={id}';
             }
             if (strpos($normalized, 'https://easyverein.com/api/v2.0/custom-field') === 0) {
-                $normalized = '/api/v2.0/custom-field';
+                $normalized = '/api/v3.0/custom-field';
             }
             if (strpos($normalized, 'https://easyverein.com/api/v2.0/member/') === 0) {
-                $normalized = '/api/v2.0/member/{id}/custom-fields';
+                $normalized = '/api/v3.0/member-custom-field-assignment?user_object={id}';
             }
             if ($key === 'evg_manual_sync_table_prefix' || $key === 'evg_nightly_sync_table_prefix') {
                 $normalized = EVG_Sync::sanitize_table_prefix($normalized);
@@ -217,6 +238,7 @@ class EVG_Plugin {
         if ($nightly_prefix !== '' && $nightly_prefix !== 'evg' && $nightly_prefix !== $manual_prefix){
             $this->ensure_tables_for_prefix($nightly_prefix);
         }
+        $this->migrate_api_paths_to_v3();
         $this->ensure_runtime_option_defaults();
         new EVG_Admin();
         new EVG_Sync();
