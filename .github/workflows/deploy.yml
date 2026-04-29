@@ -13,6 +13,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          CURRENT=$(grep "define('EVG_VERSION'" easyverein-go.php | grep -oP "'\K[0-9]+\.[0-9]+\.[0-9]+")
+          MAJOR=$(echo $CURRENT | cut -d. -f1)
+          MINOR=$(echo $CURRENT | cut -d. -f2)
+          PATCH=$(echo $CURRENT | cut -d. -f3)
+          NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+          sed -i "s/define('EVG_VERSION','$CURRENT')/define('EVG_VERSION','$NEW')/" easyverein-go.php
+          sed -i "s/ \* Version: $CURRENT/ \* Version: $NEW/" easyverein-go.php
+          sed -i "s/Plugin-Version: \*\*$CURRENT\*\*/Plugin-Version: \*\*$NEW\*\*/" README.md
+          echo "version=$NEW" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add easyverein-go.php README.md
+          git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git push
 
       - name: Deploy via rsync
         uses: burnett01/rsync-deployments@7.0.1

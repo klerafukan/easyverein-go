@@ -15,6 +15,7 @@ class EVG_Admin {
         add_action('edit_user_profile_update', [$this,'save_user_groups']);
 
         add_action('admin_enqueue_scripts', [$this,'enqueue_admin_assets']);
+        add_action('admin_bar_menu', [$this,'admin_bar_version'], 100);
     }
 
     public function sanitize_table_prefix($value){
@@ -279,6 +280,16 @@ class EVG_Admin {
         })();
         </script>
     <?php }
+
+    public function admin_bar_version($wp_admin_bar){
+        if (!current_user_can('manage_options')) return;
+        $wp_admin_bar->add_node([
+            'id'    => 'evg-version',
+            'title' => 'EVG ' . EVG_VERSION,
+            'href'  => admin_url('admin.php?page='.EVG_SLUG),
+            'meta'  => ['title' => 'Easyverein Go ' . EVG_VERSION],
+        ]);
+    }
 
     public function enqueue_admin_assets($hook){
         if ($hook !== 'profile.php' && $hook !== 'user-edit.php') return;
