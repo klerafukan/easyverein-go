@@ -1,6 +1,6 @@
 # Easyverein Go
 
-Aktuelle Plugin-Version: **3.2.0**
+Aktuelle Plugin-Version: **3.2.1**
 
 Easyverein Go ist ein WordPress‑Plugin, das Daten aus EasyVerein lokal spiegelt und ein komfortables Frontend für eingeloggte Mitglieder bereitstellt. Die wichtigsten Funktionen im Überblick:
 
