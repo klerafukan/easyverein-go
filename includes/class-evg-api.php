@@ -217,6 +217,13 @@ class EVG_Api {
             'permission_callback' => $auth,
         ] );
 
+        // OAuth-Callback: EasyVerein redirectet hierher (HTTPS), wir leiten weiter zur App
+        register_rest_route( 'easyverein-go/v1', '/oauth/callback', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_oauth_callback'],
+            'permission_callback' => '__return_true',
+        ] );
+
         register_rest_route( 'easyverein-go/v1', '/change-requests', [
             [
                 'methods'             => WP_REST_Server::READABLE,
@@ -239,24 +246,57 @@ class EVG_Api {
     }
 
     // -------------------------------------------------------------------------
+    // /oauth/callback  – Empfängt EasyVerein-Redirect, leitet zur App weiter
+    // -------------------------------------------------------------------------
+
+    public function rest_oauth_callback( WP_REST_Request $request ) {
+        $code  = sanitize_text_field( $request->get_param( 'code' )  ?? '' );
+        $state = sanitize_text_field( $request->get_param( 'state' ) ?? '' );
+        $error = sanitize_text_field( $request->get_param( 'error' ) ?? '' );
+
+        error_log( '[EVG OAuth] callback received – code=' . ( $code ? substr($code, 0, 10) . '…' : 'EMPTY' )
+            . ' state=' . ( $state ?: 'EMPTY' )
+            . ' error=' . ( $error ?: 'none' ) );
+
+        if ( $error ) {
+            $app_url = 'tvmiesbach://auth/callback?error=' . rawurlencode( $error );
+        } elseif ( ! $code ) {
+            error_log( '[EVG OAuth] callback missing code – params: ' . json_encode( $request->get_params() ) );
+            $app_url = 'tvmiesbach://auth/callback?error=missing_code';
+        } else {
+            $params  = array_filter( [ 'code' => $code, 'state' => $state ] );
+            $app_url = 'tvmiesbach://auth/callback?' . http_build_query( $params );
+        }
+
+        error_log( '[EVG OAuth] redirecting to: ' . $app_url );
+
+        nocache_headers();
+        header( 'Location: ' . $app_url, true, 302 );
+        exit;
+    }
+
+    // -------------------------------------------------------------------------
     // /me
     // -------------------------------------------------------------------------
 
     public function rest_me( WP_REST_Request $request ) {
-        $user_id   = get_current_user_id();
-        $user      = get_userdata( $user_id );
-        $allow_all = (int) get_user_meta( $user_id, 'evg_groups_all', true );
-        $groups    = (array) get_user_meta( $user_id, 'evg_groups', true );
-        $groups    = array_values( array_filter( array_map( 'strval', $groups ) ) );
-        $ev_sub    = (string) get_user_meta( $user_id, 'evg_oidc_sub', true );
+        $user_id      = get_current_user_id();
+        $user         = get_userdata( $user_id );
+        $allow_all    = (int) get_user_meta( $user_id, 'evg_groups_all', true );
+        $groups       = (array) get_user_meta( $user_id, 'evg_groups', true );
+        $groups       = array_values( array_filter( array_map( 'strval', $groups ) ) );
+        $ev_sub       = (string) get_user_meta( $user_id, 'evg_oidc_sub', true );
+        $direct_write = (bool) $user->has_cap( 'evg_direct_write' );
 
         return new WP_REST_Response( [
-            'user_id'        => $user_id,
-            'display_name'   => $user->display_name,
-            'email'          => $user->user_email,
-            'ev_sub'         => $ev_sub,
-            'groups_all'     => (bool) $allow_all,
-            'allowed_groups' => $allow_all ? [] : $groups,
+            'wp_user_id'       => $user_id,
+            'display_name'     => $user->display_name,
+            'email'            => $user->user_email,
+            'ev_sub'           => $ev_sub,
+            'allow_all_groups' => (bool) $allow_all,
+            'allowed_group_ids'=> $allow_all ? [] : $groups,
+            'can_submit_changes' => true,
+            'can_direct_write'   => $direct_write,
         ], 200 );
     }
 
@@ -290,12 +330,12 @@ class EVG_Api {
 
         $groups = array_map( function( $row ) {
             return [
-                'id'    => (string) $row['group_id'],
-                'label' => (string) $row['label'],
+                'group_id' => (string) $row['group_id'],
+                'label'    => (string) $row['label'],
             ];
         }, (array) $rows );
 
-        return new WP_REST_Response( [ 'groups' => $groups ], 200 );
+        return new WP_REST_Response( $groups, 200 );
     }
 
     // -------------------------------------------------------------------------
