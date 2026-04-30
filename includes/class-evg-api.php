@@ -107,7 +107,8 @@ class EVG_Api {
         $cache_key = 'evg_ui_' . md5( $token );
         $cached    = get_transient( $cache_key );
         if ( $cached !== false ) {
-            return ( is_int( $cached ) && $cached > 0 ) ? $cached : null;
+            $uid = (int) $cached;
+            return ( $uid > 0 ) ? $uid : null;
         }
 
         $response = wp_remote_get( 'https://easyverein.com/oauth2/userinfo/', [
