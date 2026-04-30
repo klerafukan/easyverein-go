@@ -552,15 +552,15 @@ class EVG_Sync {
                     }
                     if (is_array($d)){
                         $now = current_time('mysql',1);
-                        $first  = $d['firstName']  ?? $d['first_name']  ?? '';
-                        $family = $d['familyName']  ?? $d['lastName']    ?? $d['last_name']    ?? '';
-                        $dob    = $d['dateOfBirth'] ?? $d['date_of_birth'] ?? $d['birthDate'] ?? null;
+                        $first  = $d['first_name']  ?? $d['firstName']  ?? '';
+                        $family = $d['family_name']  ?? $d['familyName'] ?? $d['lastName'] ?? $d['last_name'] ?? '';
+                        $dob    = $d['date_of_birth'] ?? $d['dateOfBirth'] ?? $d['birthDate'] ?? null;
                         $age    = isset($d['age']) ? intval($d['age']) : null;
-                        $pemail = $d['privateEmail'] ?? $d['email_private'] ?? $d['emailPrivate'] ?? $d['email'] ?? '';
+                        $pemail = $d['private_email'] ?? $d['privateEmail'] ?? $d['email_private'] ?? $d['primary_email'] ?? $d['email'] ?? '';
                         $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
                         $city   = $d['city']   ?? '';
                         $street = $d['street'] ?? '';
-                        $addrS  = $d['addressSuffix'] ?? $d['address_suffix'] ?? $d['addressAddition'] ?? '';
+                        $addrS  = $d['address_suffix'] ?? $d['addressSuffix'] ?? $d['addressAddition'] ?? '';
                         $birthYear = null;
                         if (isset($d['birthYear']))       $birthYear = intval($d['birthYear']);
                         elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
@@ -571,8 +571,9 @@ class EVG_Sync {
                         foreach (['gender','sex','sexType'] as $gk){ if (!empty($d[$gk])){ $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]); break; } }
                         if (strlen($gender) > 32) $gender = substr($gender,0,32);
                         $phones = [];
-                        $pKeys = ['phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
-                                  'private_telephone','privateTelephone','mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate',
+                        $pKeys = ['private_phone','mobile_phone','company_phone',
+                                  'phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
+                                  'private_telephone','privateTelephone','mobilePhone','mobile','mobile_private','mobilePrivate',
                                   'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
                         if (isset($d['phones']) && is_array($d['phones'])){ foreach($d['phones'] as $p){ if(is_string($p)&&trim($p)!=='') $phones[]=trim($p); if(is_array($p)) foreach($p as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } }
                         foreach ($pKeys as $pk){ if(!empty($d[$pk])){ if(is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
