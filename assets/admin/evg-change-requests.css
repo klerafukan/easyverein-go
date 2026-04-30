@@ -1,0 +1,7 @@
+/* Easyverein Go – Änderungsanfragen Admin */
+.evg-cr-status-pending   { color: #b45309; font-weight: 600; }
+.evg-cr-status-approved  { color: #166534; font-weight: 600; }
+.evg-cr-status-rejected  { color: #991b1b; font-weight: 600; }
+
+.wp-list-table .column-id     { width: 50px; }
+.wp-list-table .column-action { width: 160px; }

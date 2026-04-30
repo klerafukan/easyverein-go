@@ -17,6 +17,7 @@ require_once EVG_PATH.'includes/evg-utils.php';
 require_once EVG_PATH.'includes/class-evg-admin.php';
 require_once EVG_PATH.'includes/class-evg-sync.php';
 require_once EVG_PATH.'includes/class-evg-frontend.php';
+require_once EVG_PATH.'includes/class-evg-api.php';
 
 class EVG_Plugin {
     private const CRON_HOOK = 'evg_nightly_sync';
@@ -59,6 +60,7 @@ class EVG_Plugin {
         if(self::NIGHTLY_TABLE_PREFIX!=='evg'){
             $this->ensure_tables_for_prefix(self::NIGHTLY_TABLE_PREFIX);
         }
+        EVG_Api::ensure_change_requests_table();
     }
     public function on_deactivate(){
         $this->clear_cron();
@@ -243,6 +245,7 @@ class EVG_Plugin {
         new EVG_Admin();
         new EVG_Sync();
         new EVG_Frontend();
+        new EVG_Api();
         add_action('init',[$this,'maybe_schedule_cron']);
         add_action('rest_api_init',[$this,'register_rest_endpoints']);
     }
