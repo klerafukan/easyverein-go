@@ -8,6 +8,7 @@ class EVG_Admin {
         add_action('wp_ajax_evg_sync_start', [$this,'ajax_sync_start']);
         add_action('wp_ajax_evg_sync_tick', [$this,'ajax_sync_tick']);
         add_action('wp_ajax_evg_test_connection', [$this,'ajax_test_connection']);
+        add_action('wp_ajax_evg_nightly_log', [$this,'ajax_nightly_log']);
 
         add_action('show_user_profile', [$this,'user_groups_fields']);
         add_action('edit_user_profile',  [$this,'user_groups_fields']);
@@ -279,6 +280,60 @@ class EVG_Admin {
             document.getElementById('evg-nightly-sim').onclick    = function(e) { e.preventDefault(); nightlySync(EVGAdmin.nightlyPrefix); };
         })();
         </script>
+
+        <?php
+        // ── Nightly-Log-Viewer ───────────────────────────────────────────────
+        $log_dir = WP_CONTENT_DIR.'/easyverein-debug';
+        $log_files = [];
+        if (is_dir($log_dir)) {
+            foreach (glob($log_dir.'/nightly-*.log') ?: [] as $f) {
+                $log_files[] = $f;
+            }
+            rsort($log_files); // neueste zuerst
+        }
+        ?>
+        <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
+            <h2><?php esc_html_e('Nighty-Sync Logs','ev-groups'); ?></h2>
+            <?php if (empty($log_files)): ?>
+                <p><?php esc_html_e('Noch kein Nightly-Log vorhanden. Log-Datei wird beim ersten nächtlichen Lauf angelegt.','ev-groups'); ?></p>
+            <?php else: ?>
+            <p>
+                <select id="evg-log-select" style="max-width:400px">
+                <?php foreach (array_slice($log_files, 0, 10) as $f): ?>
+                    <option value="<?php echo esc_attr(basename($f)); ?>"><?php echo esc_html(basename($f)); ?></option>
+                <?php endforeach; ?>
+                </select>
+                <button type="button" class="button" id="evg-log-load"><?php esc_html_e('Laden','ev-groups'); ?></button>
+                <span id="evg-log-status" style="margin-left:8px;color:#666;"></span>
+            </p>
+            <textarea id="evg-log-content" readonly style="width:100%;height:400px;font-family:monospace;font-size:12px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;resize:vertical;padding:8px;"></textarea>
+            <script>
+            (function(){
+                var sel  = document.getElementById('evg-log-select');
+                var btn  = document.getElementById('evg-log-load');
+                var txt  = document.getElementById('evg-log-content');
+                var stat = document.getElementById('evg-log-status');
+                var ajax = <?php echo wp_json_encode(admin_url('admin-ajax.php')); ?>;
+                var n    = <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>;
+                function load() {
+                    stat.textContent = 'Lade…';
+                    txt.value = '';
+                    jQuery.post(ajax, {action:'evg_nightly_log', _wpnonce:n, file: sel.value}, function(r){
+                        if (r && r.success) {
+                            txt.value = r.data.content || '(leer)';
+                            txt.scrollTop = txt.scrollHeight;
+                            stat.textContent = '';
+                        } else {
+                            stat.textContent = 'Fehler beim Laden';
+                        }
+                    }).fail(function(){ stat.textContent = 'Netzwerkfehler'; });
+                }
+                btn.onclick = load;
+                load();
+            })();
+            </script>
+            <?php endif; ?>
+        </div>
     <?php }
 
     public function admin_bar_version($wp_admin_bar){
@@ -474,6 +529,24 @@ class EVG_Admin {
             }
         }
         update_user_meta($user_id, 'evg_custom_filters', $allow_all_custom ? [] : array_values(array_unique($selected_tokens)));
+    }
+
+    public function ajax_nightly_log(){
+        check_ajax_referer('evg_sync');
+        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+        $file = isset($_POST['file']) ? sanitize_file_name(wp_unslash($_POST['file'])) : '';
+        if (!preg_match('/^nightly-[0-9]{8}-[0-9]{6}\.log$/', $file)) {
+            wp_send_json_error(['message'=>'Ungültiger Dateiname']);
+        }
+        $path = WP_CONTENT_DIR.'/easyverein-debug/'.$file;
+        if (!file_exists($path)) {
+            wp_send_json_error(['message'=>'Datei nicht gefunden']);
+        }
+        $content = file_get_contents($path);
+        if ($content === false) {
+            wp_send_json_error(['message'=>'Datei nicht lesbar']);
+        }
+        wp_send_json_success(['content' => $content]);
     }
 
     public function ajax_test_connection(){

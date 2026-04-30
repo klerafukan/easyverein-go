@@ -37,7 +37,8 @@ class EVG_Frontend {
         'groups'         => 'Gruppen',
         'custom_fields'  => 'Merkmale',
         'member_number'  => 'Mitgliedsnummer',
-        'contact_details'=> 'Kontakt-Details'
+        'contact_details'=> 'Kontakt-Details',
+        'updated_at'     => 'Stand',
     ];
 
     public function __construct(){
@@ -53,7 +54,8 @@ class EVG_Frontend {
             'ajax'          => admin_url('admin-ajax.php'),
             'nonce'         => wp_create_nonce('evg_local'),
             'columnsDefault'=> $this->get_default_columns(),
-            'columnLabels'  => $this->get_column_labels()
+            'columnLabels'  => $this->get_column_labels(),
+            'lastSync'      => (string) get_option('evg_last_sync_completed', ''),
         ));
     }
     public function shortcode($atts=array()){
@@ -73,6 +75,13 @@ class EVG_Frontend {
             </div>
             <div class="evg-meta">
                 <div class="evg-count"><span class="evg-count-current">0</span> / <span class="evg-count-total">0</span> <?php echo esc_html__('Personen','ev-groups'); ?></div>
+                <?php
+                $last_sync = get_option('evg_last_sync_completed','');
+                if ($last_sync) {
+                    $ts = strtotime($last_sync);
+                    echo '<div class="evg-last-sync">'.esc_html__('Datenstand','ev-groups').': <span title="'.esc_attr(date_i18n('d.m.Y H:i', $ts)).'">'.esc_html(date_i18n('d.m.Y H:i', $ts)).'</span></div>';
+                }
+                ?>
                 <div class="evg-pagination" aria-label="<?php echo esc_attr__('Seitennavigation','ev-groups'); ?>" role="navigation" hidden>
                     <button type="button" class="button button-secondary evg-page-prev" disabled>&lsaquo;</button>
                     <span class="evg-page-info"><?php echo esc_html__('Seite','ev-groups'); ?> <span class="evg-page-current">1</span> / <span class="evg-page-total">1</span></span>
@@ -285,6 +294,7 @@ class EVG_Frontend {
                 'member_number' => isset($d['member_number'])?$d['member_number']:'',
                 'custom_pairs'  => $custom_pairs_arr,
                 'custom_labels' => $custom_labels_arr,
+                'updated_at'    => isset($d['updated_at']) ? $d['updated_at'] : '',
             );
         }
 

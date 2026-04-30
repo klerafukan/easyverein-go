@@ -460,6 +460,12 @@ class EVG_Plugin {
             $this->clear_cron();
         }
     }
+    private function append_nightly_log($log_file, $message){
+        $dir = dirname($log_file);
+        if (!is_dir($dir)) { wp_mkdir_p($dir); }
+        @file_put_contents($log_file, '['.date('H:i:s').'] '.$message."\n", FILE_APPEND | LOCK_EX);
+    }
+
     public function run_nightly_sync(){
         if(!get_option('evg_nightly_sync_enabled',0)){
             return;
@@ -480,6 +486,9 @@ class EVG_Plugin {
         $nightly_prefix=EVG_Sync::sanitize_table_prefix($raw_prefix);
         $this->ensure_tables_for_prefix($nightly_prefix);
         $sync=new EVG_Sync($nightly_prefix);
+
+        $log_dir  = WP_CONTENT_DIR.'/easyverein-debug';
+        $log_file = $log_dir.'/nightly-'.date('Ymd-His').'.log';
 
         // Stuck-State-Erkennung: verhindert dauerhaftes Blockieren bei Fehlern
         $state=get_option($sync->get_state_option_key(),[]);
@@ -502,6 +511,11 @@ class EVG_Plugin {
         }
 
         $sync->job_start(0);
+        $this->append_nightly_log($log_file, 'START EVG '.EVG_VERSION.' | PHP '.PHP_VERSION
+            .' | memory_limit='.ini_get('memory_limit').' | prefix='.$nightly_prefix);
+        if ($stuck_info !== '') {
+            $this->append_nightly_log($log_file, 'HINWEIS: '.$stuck_info);
+        }
 
         // Startzeitstempel in State schreiben (für künftige Stuck-State-Erkennung)
         $st = get_option($sync->get_state_option_key(), []);
@@ -519,19 +533,21 @@ class EVG_Plugin {
         $error_message='';
         $iteration=0;
         $tick_log = [];
+        $last_phase_logged = '';
         while(true){
             $result=$sync->job_tick();
             $iteration++;
-            if(isset($result['percent'])){
-                $tick_log[] = sprintf(
-                    '#%d %.1f%% – %s',
-                    $iteration,
-                    floatval($result['percent']),
-                    isset($result['label']) ? (string)$result['label'] : ''
-                );
+            $cur_label = isset($result['label']) ? (string)$result['label'] : '';
+            // Log every tick to file; detect phase change for email summary
+            $this->append_nightly_log($log_file, sprintf('#%d %.1f%% %s', $iteration, floatval($result['percent'] ?? 0), $cur_label));
+            $cur_phase = ($cur_label !== '') ? strtok($cur_label, ' ') : '';
+            if ($cur_phase !== $last_phase_logged) {
+                $last_phase_logged = $cur_phase;
+                $tick_log[] = sprintf('#%d %s', $iteration, $cur_label);
             }
             if(empty($result['ok'])){
                 $error_message=isset($result['summary']) ? (string)$result['summary'] : 'Unbekannter Fehler';
+                $this->append_nightly_log($log_file, 'ERROR: '.$error_message);
                 break;
             }
             if(!empty($result['done'])){
@@ -541,15 +557,23 @@ class EVG_Plugin {
             $max_iterations--;
             if($max_iterations<=0){
                 $error_message='Abbruch nach Iterationslimit ('.apply_filters('evg_nightly_sync_iteration_limit',20000).' Ticks)';
+                $this->append_nightly_log($log_file, 'ABBRUCH: '.$error_message);
                 break;
             }
             if(microtime(true) >= $deadline){
                 $error_message='Abbruch nach Zeitlimit ('.round($time_budget/60).' Minuten)';
+                $this->append_nightly_log($log_file, 'ABBRUCH: '.$error_message);
                 break;
             }
         }
 
         $elapsed = microtime(true) - $start_time;
+        if ($sync_success) {
+            update_option('evg_last_sync_completed', current_time('mysql', 1), false);
+            $this->append_nightly_log($log_file, sprintf('FERTIG in %.1fs | %d Iterationen', $elapsed, $iteration));
+        } else {
+            $this->append_nightly_log($log_file, sprintf('FEHLGESCHLAGEN nach %.1fs | %d Iterationen', $elapsed, $iteration));
+        }
 
         $state_final=get_option($sync->get_state_option_key(),[]);
         $state_counts=[
