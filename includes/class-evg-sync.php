@@ -646,7 +646,9 @@ class EVG_Sync {
             // ── PHASE: member_groups (per-member groups) ─────────────────────
             } elseif ($s['phase'] === 'member_groups') {
                 if ($s['member_index'] >= count($s['member_ids'])){
-                    $s['done'] = true; break;
+                    $s['done'] = true;
+                    update_option('evg_last_sync_completed', current_time('mysql',1), false);
+                    break;
                 }
                 $mid  = $s['member_ids'][$s['member_index']];
                 $mg_path = get_option('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}');

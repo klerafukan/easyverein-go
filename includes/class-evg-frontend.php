@@ -59,6 +59,7 @@ class EVG_Frontend {
         ));
     }
     public function shortcode($atts=array()){
+        global $wpdb;
         if(!is_user_logged_in()){
             return '<div class="evg-notice">'.esc_html__('Bitte einloggen, um die Tabelle zu sehen.','ev-groups').'</div>';
         }
@@ -76,7 +77,9 @@ class EVG_Frontend {
             <div class="evg-meta">
                 <div class="evg-count"><span class="evg-count-current">0</span> / <span class="evg-count-total">0</span> <?php echo esc_html__('Personen','ev-groups'); ?></div>
                 <?php
-                $last_sync = get_option('evg_last_sync_completed','');
+                $m_table  = $wpdb->prefix.'evg_members';
+                $last_sync = $wpdb->get_var("SELECT MAX(updated_at) FROM {$m_table}");
+                if (!$last_sync) $last_sync = get_option('evg_last_sync_completed','');
                 if ($last_sync) {
                     $ts = strtotime($last_sync);
                     echo '<div class="evg-last-sync">'.esc_html__('Datenstand','ev-groups').': <span title="'.esc_attr(date_i18n('d.m.Y H:i', $ts)).'">'.esc_html(date_i18n('d.m.Y H:i', $ts)).'</span></div>';
