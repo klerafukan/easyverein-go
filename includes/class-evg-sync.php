@@ -285,15 +285,13 @@ class EVG_Sync {
 
         $state=[
             'phase'  => 'groups',
-            'pages'  => ['groups'=>0,'custom_fields'=>0,'members_list'=>0,'member_cf_bulk'=>0,'member_groups_bulk'=>0],
+            'pages'  => ['groups'=>0,'custom_fields'=>0,'members_list'=>0],
             'counts' => ['groups'=>0,'custom_fields'=>0,'custom_field_values'=>0,'members_list'=>0,'details'=>0,'member_custom_fields'=>0,'member_groups'=>0],
             'est'    => ['groups'=>1,'custom_fields'=>1,'custom_field_values'=>1,'members_list'=>1,'details'=>1,'member_custom_fields'=>1,'member_groups'=>1],
             'next'   => [
-                'groups'             => $this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
-                'custom_fields'      => $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
-                'members_list'       => $this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member')),
-                'member_cf_bulk'     => $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}'),
-                'member_groups_bulk' => $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'),
+                'groups'        => $this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
+                'custom_fields' => $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
+                'members_list'  => $this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member')),
             ],
             'member_ids'              => [],
             'member_index'            => 0,
@@ -379,15 +377,6 @@ class EVG_Sync {
             if (!isset($s[$k]) || !is_array($s[$k])) $s[$k] = [];
         }
         if (!isset($s['member_index'])) $s['member_index'] = 0;
-        foreach (['member_cf_bulk','member_groups_bulk'] as $k){
-            if (!isset($s['pages'][$k])) $s['pages'][$k] = 0;
-        }
-        if (!isset($s['next']['member_cf_bulk'])){
-            $s['next']['member_cf_bulk'] = $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
-        }
-        if (!isset($s['next']['member_groups_bulk'])){
-            $s['next']['member_groups_bulk'] = $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}');
-        }
         if (!isset($s['next']['custom_fields'])){
             $s['next']['custom_fields'] = $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field'));
         }
@@ -541,7 +530,9 @@ class EVG_Sync {
             // ── PHASE: details (per-member contact-details) ──────────────────
             } elseif ($s['phase'] === 'details') {
                 if ($s['member_index'] >= count($s['member_ids'])){
-                    $s['phase'] = 'member_cf_bulk'; continue;
+                    $s['phase'] = 'member_cf';
+                    $s['member_index'] = 0;
+                    continue;
                 }
                 $mid  = $s['member_ids'][$s['member_index']];
                 $cd   = $wpdb->get_var($wpdb->prepare("SELECT contact_details FROM {$m_table} WHERE member_id=%s LIMIT 1",$mid));
@@ -590,27 +581,28 @@ class EVG_Sync {
                 }
                 $s['member_index']++;
 
-            // ── PHASE: member_cf_bulk ────────────────────────────────────────
-            } elseif ($s['phase'] === 'member_cf_bulk') {
-                $url = $s['next']['member_cf_bulk'];
-                if (!$url || $s['pages']['member_cf_bulk'] >= $this->pages_max()) {
-                    $s['phase'] = 'member_groups_bulk'; continue;
+            // ── PHASE: member_cf (per-member custom fields) ──────────────────
+            } elseif ($s['phase'] === 'member_cf') {
+                if ($s['member_index'] >= count($s['member_ids'])){
+                    $s['phase'] = 'member_groups';
+                    $s['member_index'] = 0;
+                    continue;
                 }
+                $mid  = $s['member_ids'][$s['member_index']];
+                $cf_path = get_option('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
+                $url  = $this->normalize_endpoint(str_replace('{id}',rawurlencode($mid),$cf_path));
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
-                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                if (is_wp_error($resp)){ $s['member_index']++; continue; }
                 $code = wp_remote_retrieve_response_code($resp);
-                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Member-CF-Bulk HTTP '.$code];
+                if ($code===429){ $s['member_index']++; $this->put_state($s); return ['ok'=>false,'summary'=>'Rate limited (CF), will retry next tick']; }
+                if ($code<200||$code>=300){ $s['member_index']++; continue; }
                 $payload = json_decode(wp_remote_retrieve_body($resp),true);
                 $items   = $this->extract_items_from_payload($payload);
-                $next    = $this->extract_next_from_payload($payload);
                 $now     = current_time('mysql',1);
-                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
                 foreach ((array)$items as $entry){
                     if (!is_array($entry)) continue;
                     $mid = $this->extract_member_id_from_ref($entry['user_object'] ?? null);
                     if (!$mid) continue;
-                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
-                    // field_id
                     $field_id = null;
                     $fieldRef = $entry['customField'] ?? $entry['custom_field'] ?? null;
                     if (is_string($fieldRef) && $fieldRef !== ''){
@@ -649,31 +641,30 @@ class EVG_Sync {
                         if ($s['counts']['custom_field_values'] > ($s['est']['custom_field_values']??1)) $s['est']['custom_field_values']=$s['counts']['custom_field_values'];
                     }
                 }
-                $s['pages']['member_cf_bulk']++;
-                $s['next']['member_cf_bulk'] = $this->next_url($next);
+                $s['member_index']++;
 
-            // ── PHASE: member_groups_bulk ────────────────────────────────────
-            } elseif ($s['phase'] === 'member_groups_bulk') {
-                $url = $s['next']['member_groups_bulk'];
-                if (!$url || $s['pages']['member_groups_bulk'] >= $this->pages_max()) {
+            // ── PHASE: member_groups (per-member groups) ─────────────────────
+            } elseif ($s['phase'] === 'member_groups') {
+                if ($s['member_index'] >= count($s['member_ids'])){
                     $s['done'] = true; break;
                 }
+                $mid  = $s['member_ids'][$s['member_index']];
+                $mg_path = get_option('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}');
+                $url  = $this->normalize_endpoint(str_replace('{id}',rawurlencode($mid),$mg_path));
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
-                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
+                if (is_wp_error($resp)){ $s['member_index']++; continue; }
                 $code = wp_remote_retrieve_response_code($resp);
-                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Member-Groups-Bulk HTTP '.$code];
-                $arr  = json_decode(wp_remote_retrieve_body($resp),true);
+                if ($code===429){ $s['member_index']++; $this->put_state($s); return ['ok'=>false,'summary'=>'Rate limited (groups), will retry next tick']; }
+                if ($code<200||$code>=300){ $s['member_index']++; continue; }
+                $arr   = json_decode(wp_remote_retrieve_body($resp),true);
                 $items = $this->extract_items_from_payload($arr);
-                $next  = $this->extract_next_from_payload($arr);
                 $now   = current_time('mysql',1);
-                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
-                // Pre-cache member names for members we'll encounter
-                $name_cache = [];
+                $row   = $wpdb->get_row($wpdb->prepare("SELECT first_name,family_name FROM $m_table WHERE member_id=%s LIMIT 1",$mid),ARRAY_A);
+                $member_name = $row ? trim(($row['first_name']??'').' '.($row['family_name']??'')) : '';
                 foreach ((array)$items as $g){
                     if (!is_array($g)) continue;
-                    $mid = $this->extract_member_id_from_ref($g['user_object'] ?? null);
-                    if (!$mid) continue;
-                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
+                    $g_mid = $this->extract_member_id_from_ref($g['user_object'] ?? null);
+                    if (!$g_mid) continue;
                     // group id
                     $gid = null;
                     $mgRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
@@ -686,19 +677,11 @@ class EVG_Sync {
                     }
                     if (!$gid && isset($g['groupId']) && is_numeric($g['groupId'])) $gid=(string)$g['groupId'];
                     if (!$gid) continue;
-                    // member name (cached)
-                    if (!isset($name_cache[$mid])){
-                        $row = $wpdb->get_row($wpdb->prepare("SELECT first_name,family_name FROM $m_table WHERE member_id=%s LIMIT 1",$mid),ARRAY_A);
-                        $name_cache[$mid] = $row ? trim(($row['first_name']??'').' '.($row['family_name']??'')) : '';
-                    }
-                    // group name from local groups table
                     $group_name = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM $g_table WHERE group_id=%s LIMIT 1",$gid)) ?? '');
-                    $wpdb->replace($x_table,['member_id'=>$mid,'group_id'=>$gid,'member_name'=>$name_cache[$mid],'group_name'=>$group_name,'assigned_at'=>$now],['%s','%s','%s','%s','%s']);
+                    $wpdb->replace($x_table,['member_id'=>$g_mid,'group_id'=>$gid,'member_name'=>$member_name,'group_name'=>$group_name,'assigned_at'=>$now],['%s','%s','%s','%s','%s']);
                     $s['counts']['member_groups']++;
                 }
-                $s['pages']['member_groups_bulk']++;
-                $s['next']['member_groups_bulk'] = $this->next_url($next);
-                if (!$s['next']['member_groups_bulk']) { $s['done'] = true; break; }
+                $s['member_index']++;
 
             } else {
                 return ['ok'=>false,'summary'=>'Unbekannte Phase: '.($s['phase']??'none')];
