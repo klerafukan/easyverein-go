@@ -314,3 +314,50 @@ TV_Miesbach_APP/
 | Direktschreib-User | **Custom Capability `evg_direct_write` für ≤10 User** | 🔲 ausstehend |
 | Distribution | **App Store (iOS) + Play Store (Android) via EAS Build** | 🔲 ausstehend |
 | WP-Endpoints | **`/me`, `/groups`, `/change-requests`** | 🔲 ausstehend |
+
+---
+
+## 10. Deployment
+
+### WordPress-Plugin (Easyverein-Go)
+
+**Automatisch via GitHub Actions** – nach jedem Push auf `main` wird das Plugin auf den Server deployed.
+
+> ⚠️ **Nie manuell per rsync deployen** – immer über Git pushen, die GitHub Action übernimmt den Rest.
+
+```bash
+# Plugin-Änderungen deployen:
+git add -A
+git commit -m "feat: ..."
+git push   # → GitHub Action deployt automatisch auf staging.tv-miesbach.de
+```
+
+**Ziel-Pfad auf dem Server:**
+```
+tvwmie@www435.your-server.de:~/public_html/staging/wp-content/plugins/Easyverein-Go/
+```
+
+**SSH-Verbindung (falls manuell nötig):**
+```bash
+ssh -i ~/.ssh/deploy_easyverein -p222 tvwmie@www435.your-server.de
+```
+
+**Datenbank:**
+- Host: `sql334.your-server.de`
+- Datenbank: `tv_db_1`
+- Tabellen-Prefix: `wp_tv_`
+- EVG-Tabellen: `wp_tv_evg_members`, `wp_tv_evg_groups`, `wp_tv_evg_member_groups`, etc.
+
+### OAuth-Callback-Flow (implementiert)
+
+EasyVerein unterstützt keine Custom-Scheme-Redirects (`tvmiesbach://`) direkt.
+Der WP-Proxy löst das Problem:
+
+```
+App (PKCE) → EasyVerein (authorizes) → WP /oauth/callback → JS-Redirect → tvmiesbach://auth/callback?code=...  → App
+```
+
+- **Redirect URI in EasyVerein:** `https://staging.tv-miesbach.de/wp-json/easyverein-go/v1/oauth/callback`
+- **returnUrl für openAuthSessionAsync:** `tvmiesbach://auth/callback`
+- Der WP-Endpoint gibt eine HTML-Seite mit `window.location.replace(tvmiesbach://...)` zurück, da Android Chrome Custom Tab 302-Redirects zu Custom Schemes blockiert.
+

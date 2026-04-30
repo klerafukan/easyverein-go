@@ -211,6 +211,17 @@ class EVG_Api {
             'permission_callback' => $auth,
         ] );
 
+        register_rest_route( 'easyverein-go/v1', '/members', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_members'],
+            'permission_callback' => $auth,
+            'args' => [
+                'modified_after' => [ 'required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ],
+                'per_page'       => [ 'required' => false, 'type' => 'integer', 'default' => 200, 'minimum' => 1, 'maximum' => 500 ],
+                'offset'         => [ 'required' => false, 'type' => 'integer', 'default' => 0,   'minimum' => 0 ],
+            ],
+        ] );
+
         register_rest_route( 'easyverein-go/v1', '/groups', [
             'methods'             => WP_REST_Server::READABLE,
             'callback'            => [$this, 'rest_groups'],
@@ -292,6 +303,129 @@ class EVG_Api {
 </html>
 HTML;
         exit;
+    }
+
+    // -------------------------------------------------------------------------
+    // /members
+    // -------------------------------------------------------------------------
+
+    public function rest_members( WP_REST_Request $request ) {
+        global $wpdb;
+
+        $user_id    = get_current_user_id();
+        $allow_all  = (bool) get_user_meta( $user_id, 'evg_groups_all', true );
+        $allowed    = (array) get_user_meta( $user_id, 'evg_groups', true );
+        $per_page   = (int) $request->get_param( 'per_page' );
+        $offset     = (int) $request->get_param( 'offset' );
+        $mod_after  = sanitize_text_field( $request->get_param( 'modified_after' ) ?? '' );
+
+        $members_tbl = $wpdb->prefix . 'evg_members';
+        $groups_tbl  = $wpdb->prefix . 'evg_member_groups';
+
+        // WHERE-Klauseln aufbauen
+        $where  = '1=1';
+        $params = [];
+
+        if ( $mod_after ) {
+            $where   .= ' AND m.updated_at > %s';
+            $params[] = $mod_after;
+        }
+
+        // Gruppen-Filter: nur Mitglieder sichtbar deren Gruppe erlaubt ist
+        if ( ! $allow_all && ! empty( $allowed ) ) {
+            $placeholders = implode( ',', array_fill( 0, count( $allowed ), '%s' ) );
+            $where       .= " AND EXISTS (
+                SELECT 1 FROM {$groups_tbl} mg
+                WHERE mg.member_id = m.member_id AND mg.group_id IN ({$placeholders})
+            )";
+            $params = array_merge( $params, $allowed );
+        } elseif ( ! $allow_all && empty( $allowed ) ) {
+            // Keine Gruppen erlaubt → leere Liste zurückgeben
+            return new WP_REST_Response( [], 200 );
+        }
+
+        $params[] = $per_page;
+        $params[] = $offset;
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT m.member_id, m.member_number, m.first_name, m.family_name,
+                        CONCAT(m.first_name, ' ', m.family_name) AS full_name,
+                        m.email_private, m.phone, m.date_of_birth, m.age, m.birth_year,
+                        m.gender, m.zip, m.city, m.street, m.address_suffix, m.updated_at
+                 FROM {$members_tbl} m
+                 WHERE {$where}
+                 ORDER BY m.family_name, m.first_name
+                 LIMIT %d OFFSET %d",
+                ...$params
+            ),
+            ARRAY_A
+        );
+
+        if ( $rows === null ) {
+            return new WP_REST_Response( [], 200 );
+        }
+
+        // Gruppen pro Mitglied laden (nur die erlaubten)
+        $member_ids = array_column( $rows, 'member_id' );
+        $groups_map = [];
+
+        if ( ! empty( $member_ids ) ) {
+            $id_placeholders = implode( ',', array_fill( 0, count( $member_ids ), '%s' ) );
+            $group_params    = $member_ids;
+
+            if ( ! $allow_all && ! empty( $allowed ) ) {
+                $g_placeholders = implode( ',', array_fill( 0, count( $allowed ), '%s' ) );
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $group_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT member_id, group_id FROM {$groups_tbl}
+                         WHERE member_id IN ({$id_placeholders}) AND group_id IN ({$g_placeholders})",
+                        ...array_merge( $member_ids, $allowed )
+                    ),
+                    ARRAY_A
+                );
+            } else {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $group_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT member_id, group_id FROM {$groups_tbl} WHERE member_id IN ({$id_placeholders})",
+                        ...$member_ids
+                    ),
+                    ARRAY_A
+                );
+            }
+
+            foreach ( (array) $group_rows as $gr ) {
+                $groups_map[ $gr['member_id'] ][] = $gr['group_id'];
+            }
+        }
+
+        $result = array_map( function( $row ) use ( $groups_map ) {
+            return [
+                'member_id'      => $row['member_id'],
+                'member_number'  => $row['member_number'] ?? '',
+                'first_name'     => $row['first_name']    ?? '',
+                'family_name'    => $row['family_name']   ?? '',
+                'full_name'      => $row['full_name']     ?? '',
+                'email_private'  => $row['email_private'] ?? '',
+                'phone'          => $row['phone']         ?? '',
+                'date_of_birth'  => $row['date_of_birth'] ?? null,
+                'age'            => isset( $row['age'] )  ? (int) $row['age'] : null,
+                'birth_year'     => isset( $row['birth_year'] ) ? (int) $row['birth_year'] : null,
+                'gender'         => $row['gender']        ?? '',
+                'zip'            => $row['zip']           ?? '',
+                'city'           => $row['city']          ?? '',
+                'street'         => $row['street']        ?? '',
+                'address_suffix' => $row['address_suffix'] ?? '',
+                'groups'         => $groups_map[ $row['member_id'] ] ?? [],
+                'custom_fields'  => [],
+                'updated_at'     => $row['updated_at'] ?? null,
+            ];
+        }, $rows );
+
+        return new WP_REST_Response( $result, 200 );
     }
 
     // -------------------------------------------------------------------------
