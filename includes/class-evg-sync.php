@@ -285,19 +285,18 @@ class EVG_Sync {
 
         $state=[
             'phase'  => 'groups',
-            'pages'  => ['groups'=>0,'custom_fields'=>0,'members_list'=>0,'contact_details_bulk'=>0,'member_cf_bulk'=>0,'member_groups_bulk'=>0],
+            'pages'  => ['groups'=>0,'custom_fields'=>0,'members_list'=>0,'member_cf_bulk'=>0,'member_groups_bulk'=>0],
             'counts' => ['groups'=>0,'custom_fields'=>0,'custom_field_values'=>0,'members_list'=>0,'details'=>0,'member_custom_fields'=>0,'member_groups'=>0],
             'est'    => ['groups'=>1,'custom_fields'=>1,'custom_field_values'=>1,'members_list'=>1,'details'=>1,'member_custom_fields'=>1,'member_groups'=>1],
             'next'   => [
-                'groups'               => $this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
-                'custom_fields'        => $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
-                'members_list'         => $this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member')),
-                'contact_details_bulk' => $this->bulk_url_from_path('evg_contact_details_path','/api/v3.0/contact-details/{id}'),
-                'member_cf_bulk'       => $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}'),
-                'member_groups_bulk'   => $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'),
+                'groups'             => $this->normalize_endpoint(get_option('evg_groups_path','/api/v3.0/member-group')),
+                'custom_fields'      => $this->normalize_endpoint(get_option('evg_custom_fields_path','/api/v3.0/custom-field')),
+                'members_list'       => $this->normalize_endpoint(get_option('evg_members_path','/api/v3.0/member')),
+                'member_cf_bulk'     => $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}'),
+                'member_groups_bulk' => $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}'),
             ],
             'member_ids'              => [],
-            'cd_map'                  => [], // contact_details_id -> member_id
+            'member_index'            => 0,
             'custom_field_types'      => [],
             'custom_field_labels'     => [],
             'custom_field_values_seen'=> [],
@@ -375,15 +374,13 @@ class EVG_Sync {
         if (empty($s)) return ['ok'=>false,'summary'=>'Kein aktiver Job'];
         if (!empty($s['done'])) return ['ok'=>true,'done'=>true,'percent'=>100,'label'=>'Fertig'];
 
-        // Ensure state keys exist (backwards compat / first tick)
-        foreach (['custom_field_types','custom_field_labels','custom_field_values_seen','cd_map','member_ids'] as $k){
+        // Ensure state keys exist
+        foreach (['custom_field_types','custom_field_labels','custom_field_values_seen','member_ids'] as $k){
             if (!isset($s[$k]) || !is_array($s[$k])) $s[$k] = [];
         }
-        foreach (['contact_details_bulk','member_cf_bulk','member_groups_bulk'] as $k){
+        if (!isset($s['member_index'])) $s['member_index'] = 0;
+        foreach (['member_cf_bulk','member_groups_bulk'] as $k){
             if (!isset($s['pages'][$k])) $s['pages'][$k] = 0;
-        }
-        if (!isset($s['next']['contact_details_bulk'])){
-            $s['next']['contact_details_bulk'] = $this->bulk_url_from_path('evg_contact_details_path','/api/v3.0/contact-details/{id}');
         }
         if (!isset($s['next']['member_cf_bulk'])){
             $s['next']['member_cf_bulk'] = $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
@@ -494,7 +491,8 @@ class EVG_Sync {
             } elseif ($s['phase'] === 'members_list') {
                 $url = $s['next']['members_list'];
                 if (!$url || $s['pages']['members_list'] >= $this->pages_max()) {
-                    $s['phase'] = 'contact_details_bulk';
+                    $s['phase'] = 'details';
+                    $s['member_index'] = 0;
                     $s['est']['details'] = max(1, count($s['member_ids']));
                     $s['est']['member_custom_fields'] = max(1, count($s['member_ids']));
                     $s['est']['member_groups'] = max(1, count($s['member_ids']));
@@ -521,9 +519,6 @@ class EVG_Sync {
                     elseif (isset($m['contactDetailsId']))  $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']);
                     elseif (isset($m['contactId']))         $cd = '/api/v3.0/contact-details/'.intval($m['contactId']);
                     if ($cd !== '' && strpos($cd,'http') !== 0) $cd = $this->base().(strpos($cd,'/')===0 ? $cd : '/'.$cd);
-                    // Build cd_map: CD-ID → member_id
-                    $cd_id = $this->extract_cd_id($cd);
-                    if ($cd_id) $s['cd_map'][$cd_id] = $mid;
                     $wpdb->query($wpdb->prepare(
                         "INSERT INTO {$m_table} (member_id,member_number,contact_details,updated_at) VALUES (%s,%s,%s,%s)
                          ON DUPLICATE KEY UPDATE member_number=VALUES(member_number),contact_details=VALUES(contact_details),updated_at=VALUES(updated_at)",
@@ -536,83 +531,64 @@ class EVG_Sync {
                 $s['pages']['members_list']++;
                 $s['next']['members_list'] = $this->next_url($next);
                 if ($s['cap'] > 0 && count($s['member_ids']) >= $s['cap']){
-                    $s['phase'] = 'contact_details_bulk';
+                    $s['phase'] = 'details';
+                    $s['member_index'] = 0;
                     $s['est']['details'] = count($s['member_ids']);
                     $s['est']['member_custom_fields'] = count($s['member_ids']);
                     $s['est']['member_groups'] = count($s['member_ids']);
                 }
 
-            // ── PHASE: contact_details_bulk ──────────────────────────────────
-            } elseif ($s['phase'] === 'contact_details_bulk') {
-                $url = $s['next']['contact_details_bulk'];
-                if (!$url || $s['pages']['contact_details_bulk'] >= $this->pages_max()) {
+            // ── PHASE: details (per-member contact-details) ──────────────────
+            } elseif ($s['phase'] === 'details') {
+                if ($s['member_index'] >= count($s['member_ids'])){
                     $s['phase'] = 'member_cf_bulk'; continue;
                 }
-                $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
-                if (is_wp_error($resp)) return ['ok'=>false,'summary'=>$resp->get_error_message()];
-                $code = wp_remote_retrieve_response_code($resp);
-                if ($code<200||$code>=300) return ['ok'=>false,'summary'=>'Contact-Details HTTP '.$code];
-                $body  = json_decode(wp_remote_retrieve_body($resp),true);
-                $items = $this->extract_items_from_payload($body);
-                $next  = $this->extract_next_from_payload($body);
-                $now   = current_time('mysql',1);
-                $cap_members = $s['cap'] > 0 ? array_flip($s['member_ids']) : null;
-                foreach ((array)$items as $d){
-                    if (!is_array($d)) continue;
-                    // Find corresponding member_id via cd_map
-                    $cd_id = isset($d['id']) ? (string)$d['id'] : null;
-                    $mid   = $cd_id && isset($s['cd_map'][$cd_id]) ? $s['cd_map'][$cd_id] : null;
-                    if (!$mid) continue;
-                    if ($cap_members !== null && !isset($cap_members[$mid])) continue;
-                    // Parse contact-details fields (v3 snake_case + v2 camelCase fallbacks)
-                    $first  = $d['firstName']  ?? $d['first_name']  ?? '';
-                    $family = $d['familyName']  ?? $d['lastName']    ?? $d['last_name']    ?? '';
-                    $dob    = $d['dateOfBirth'] ?? $d['date_of_birth'] ?? $d['birthDate'] ?? null;
-                    $age    = isset($d['age']) ? intval($d['age']) : null;
-                    $pemail = $d['privateEmail'] ?? $d['email_private'] ?? $d['emailPrivate'] ?? $d['email'] ?? '';
-                    $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
-                    $city   = $d['city']   ?? '';
-                    $street = $d['street'] ?? '';
-                    $addrS  = $d['addressSuffix'] ?? $d['address_suffix'] ?? $d['addressAddition'] ?? '';
-                    $birthYear = null;
-                    if (isset($d['birthYear']))     $birthYear = intval($d['birthYear']);
-                    elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
-                    elseif (!empty($dob) && preg_match('/^\d{4}/',(string)$dob,$mY)) $birthYear = intval($mY[0]);
-                    if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y'))+1)) $birthYear = null;
-                    $gender = '';
-                    if (!empty($d['salutation'])){
-                        $gender = is_array($d['salutation']) ? implode(', ',array_filter(array_map('trim',(array)$d['salutation']))) : trim((string)$d['salutation']);
+                $mid  = $s['member_ids'][$s['member_index']];
+                $cd   = $wpdb->get_var($wpdb->prepare("SELECT contact_details FROM {$m_table} WHERE member_id=%s LIMIT 1",$mid));
+                if ($cd && strpos($cd,'http')===0) { $durl=$cd; }
+                elseif ($cd) { $durl=$this->base().$cd; }
+                else { $durl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_contact_details_path','/api/v3.0/contact-details/{id}')); }
+                $resp = evg_http_get($durl,$this->headers()); $calls++; $this->rate_sleep();
+                if (!is_wp_error($resp) && ($c=wp_remote_retrieve_response_code($resp))>=200 && $c<300){
+                    $d = json_decode(wp_remote_retrieve_body($resp),true);
+                    if (is_array($d)){
+                        $now = current_time('mysql',1);
+                        $first  = $d['firstName']  ?? $d['first_name']  ?? '';
+                        $family = $d['familyName']  ?? $d['lastName']    ?? $d['last_name']    ?? '';
+                        $dob    = $d['dateOfBirth'] ?? $d['date_of_birth'] ?? $d['birthDate'] ?? null;
+                        $age    = isset($d['age']) ? intval($d['age']) : null;
+                        $pemail = $d['privateEmail'] ?? $d['email_private'] ?? $d['emailPrivate'] ?? $d['email'] ?? '';
+                        $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
+                        $city   = $d['city']   ?? '';
+                        $street = $d['street'] ?? '';
+                        $addrS  = $d['addressSuffix'] ?? $d['address_suffix'] ?? $d['addressAddition'] ?? '';
+                        $birthYear = null;
+                        if (isset($d['birthYear']))       $birthYear = intval($d['birthYear']);
+                        elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
+                        elseif (!empty($dob) && preg_match('/^\d{4}/',(string)$dob,$mY)) $birthYear = intval($mY[0]);
+                        if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y'))+1)) $birthYear = null;
+                        $gender = '';
+                        if (!empty($d['salutation'])) $gender = is_array($d['salutation']) ? implode(', ',array_filter(array_map('trim',(array)$d['salutation']))) : trim((string)$d['salutation']);
+                        foreach (['gender','sex','sexType'] as $gk){ if (!empty($d[$gk])){ $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]); break; } }
+                        if (strlen($gender) > 32) $gender = substr($gender,0,32);
+                        $phones = [];
+                        $pKeys = ['phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
+                                  'private_telephone','privateTelephone','mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate',
+                                  'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
+                        if (isset($d['phones']) && is_array($d['phones'])){ foreach($d['phones'] as $p){ if(is_string($p)&&trim($p)!=='') $phones[]=trim($p); if(is_array($p)) foreach($p as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } }
+                        foreach ($pKeys as $pk){ if(!empty($d[$pk])){ if(is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
+                        $phones = array_values(array_filter(array_unique($phones)));
+                        $phone  = substr(implode(', ',array_slice($phones,0,3)),0,120);
+                        $setParts = ['first_name=%s','family_name=%s','age=%d','email_private=%s','zip=%s','city=%s','street=%s','address_suffix=%s','gender=%s','phone=%s','updated_at=%s'];
+                        $params   = [$first,$family,$age,$pemail,$zip,$city,$street,(string)$addrS,$gender,$phone,$now];
+                        if (!empty($dob)&&$dob!=='0000-00-00'&&$dob!=='0000-00-00 00:00:00'){ $setParts[]='date_of_birth=%s'; $params[]=$dob; } else { $setParts[]='date_of_birth=NULL'; }
+                        if ($birthYear !== null){ $setParts[]='birth_year=%d'; $params[]=$birthYear; } else { $setParts[]='birth_year=NULL'; }
+                        $params[] = $mid;
+                        $wpdb->query($wpdb->prepare("UPDATE {$m_table} SET ".implode(',',$setParts)." WHERE member_id=%s",$params));
                     }
-                    foreach (['gender','sex','sexType'] as $gk){
-                        if (!empty($d[$gk])){
-                            $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]);
-                            break;
-                        }
-                    }
-                    if (strlen($gender) > 32) $gender = substr($gender,0,32);
-                    $phones = [];
-                    $pKeys = ['phone','private_phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
-                              'private_telephone','privateTelephone','mobile_phone','mobilePhone','mobile','mobile_private','mobilePrivate',
-                              'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
-                    if (isset($d['phones']) && is_array($d['phones'])){
-                        foreach ($d['phones'] as $p){
-                            if (is_string($p) && trim($p)!=='') $phones[]=trim($p);
-                            if (is_array($p)) foreach ($p as $sub) if (is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub);
-                        }
-                    }
-                    foreach ($pKeys as $pk){ if (!empty($d[$pk])){ if (is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
-                    $phones = array_values(array_filter(array_unique($phones)));
-                    $phone  = substr(implode(', ',array_slice($phones,0,3)),0,120);
-                    $setParts = ['first_name=%s','family_name=%s','age=%d','email_private=%s','zip=%s','city=%s','street=%s','address_suffix=%s','gender=%s','phone=%s','updated_at=%s'];
-                    $params   = [$first,$family,$age,$pemail,$zip,$city,$street,(string)$addrS,$gender,$phone,$now];
-                    if (!empty($dob) && $dob !== '0000-00-00' && $dob !== '0000-00-00 00:00:00'){ $setParts[]='date_of_birth=%s'; $params[]=$dob; } else { $setParts[]='date_of_birth=NULL'; }
-                    if ($birthYear !== null){ $setParts[]='birth_year=%d'; $params[]=$birthYear; } else { $setParts[]='birth_year=NULL'; }
-                    $params[] = $mid;
-                    $wpdb->query($wpdb->prepare("UPDATE {$m_table} SET ".implode(',',$setParts)." WHERE member_id=%s", $params));
                     $s['counts']['details']++;
                 }
-                $s['pages']['contact_details_bulk']++;
-                $s['next']['contact_details_bulk'] = $this->next_url($next);
+                $s['member_index']++;
 
             // ── PHASE: member_cf_bulk ────────────────────────────────────────
             } elseif ($s['phase'] === 'member_cf_bulk') {
