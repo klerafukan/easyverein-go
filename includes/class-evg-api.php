@@ -259,19 +259,38 @@ class EVG_Api {
             . ' error=' . ( $error ?: 'none' ) );
 
         if ( $error ) {
-            $app_url = 'tvmiesbach://auth/callback?error=' . rawurlencode( $error );
+            $app_scheme = 'tvmiesbach://auth/callback?error=' . rawurlencode( $error );
         } elseif ( ! $code ) {
             error_log( '[EVG OAuth] callback missing code – params: ' . json_encode( $request->get_params() ) );
-            $app_url = 'tvmiesbach://auth/callback?error=missing_code';
+            $app_scheme = 'tvmiesbach://auth/callback?error=missing_code';
         } else {
-            $params  = array_filter( [ 'code' => $code, 'state' => $state ] );
-            $app_url = 'tvmiesbach://auth/callback?' . http_build_query( $params );
+            $params     = array_filter( [ 'code' => $code, 'state' => $state ] );
+            $app_scheme = 'tvmiesbach://auth/callback?' . http_build_query( $params );
         }
 
-        error_log( '[EVG OAuth] redirecting to: ' . $app_url );
+        error_log( '[EVG OAuth] serving JS redirect to: ' . $app_scheme );
 
+        // Android Chrome Custom Tab blockiert direkte Custom-Scheme-Redirects (302).
+        // Lösung: HTTPS-Seite mit JavaScript + Meta-Refresh die die App öffnet.
         nocache_headers();
-        header( 'Location: ' . $app_url, true, 302 );
+        header( 'Content-Type: text/html; charset=utf-8' );
+        $escaped = esc_js( $app_scheme );
+        $attr    = esc_attr( $app_scheme );
+        echo <<<HTML
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url={$attr}">
+<title>Weiterleitung…</title>
+<script>window.location.replace("{$escaped}");</script>
+</head>
+<body>
+<p>Weiterleitung zur App…</p>
+<p><a href="{$attr}">Hier klicken falls die App nicht öffnet</a></p>
+</body>
+</html>
+HTML;
         exit;
     }
 
