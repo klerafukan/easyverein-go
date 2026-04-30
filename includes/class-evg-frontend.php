@@ -81,8 +81,8 @@ class EVG_Frontend {
                 $last_sync = $wpdb->get_var("SELECT MAX(updated_at) FROM {$m_table}");
                 if (!$last_sync) $last_sync = get_option('evg_last_sync_completed','');
                 if ($last_sync) {
-                    $ts = strtotime($last_sync);
-                    echo '<div class="evg-last-sync">'.esc_html__('Datenstand','ev-groups').': <span title="'.esc_attr(date_i18n('d.m.Y H:i', $ts)).'">'.esc_html(date_i18n('d.m.Y H:i', $ts)).'</span></div>';
+                    $local = get_date_from_gmt($last_sync, 'd.m.Y H:i');
+                    echo '<div class="evg-last-sync">'.esc_html__('Datenstand','ev-groups').': <span>'.esc_html($local).'</span></div>';
                 }
                 ?>
                 <div class="evg-pagination" aria-label="<?php echo esc_attr__('Seitennavigation','ev-groups'); ?>" role="navigation" hidden>
