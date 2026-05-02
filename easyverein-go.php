@@ -586,16 +586,15 @@ class EVG_Plugin {
     /**
      * Einstiegspunkt für den System-Cron via WP-CLI (kein HTTP-Timeout).
      * Aufruf: wp eval 'EVG_Plugin::get_instance()->run_nightly_sync_cli();' --path=…
+     *
+     * Prüft NICHT evg_nightly_sync_enabled – das System-Cron-Script selbst
+     * steuert ob und wann der Job läuft. So kein Konflikt mit WP-Cron.
      */
     public function run_nightly_sync_cli(){
-        // Auch ohne aktivierten WP-Cron ausführbar (CLI übernimmt das Scheduling)
-        if(!get_option('evg_nightly_sync_enabled',0)){
-            echo "[EVG] Nightly-Sync ist deaktiviert (evg_nightly_sync_enabled=0).\n";
-            return;
-        }
-        // Zeitlimit explizit aufheben
         if(function_exists('set_time_limit')){ @set_time_limit(0); }
+        echo "[EVG CLI] Starte Sync...\n";
         $this->run_nightly_sync_core();
+        echo "[EVG CLI] Fertig.\n";
     }
 
     public static function get_instance(){
