@@ -10,6 +10,7 @@ class EVG_Admin {
         add_action('wp_ajax_evg_test_connection', [$this,'ajax_test_connection']);
         add_action('wp_ajax_evg_nightly_log', [$this,'ajax_nightly_log']);
         add_action('wp_ajax_evg_table_swap',  [$this,'ajax_table_swap']);
+        add_action('wp_ajax_evg_swap_delta',  [$this,'ajax_swap_delta']);
 
         add_action('show_user_profile', [$this,'user_groups_fields']);
         add_action('edit_user_profile',  [$this,'user_groups_fields']);
@@ -261,10 +262,11 @@ class EVG_Admin {
                                     var d = r.data;
                                     var prefix = d.dry_run ? '[TESTLAUF] ' : '';
                                     log.textContent = prefix +
-                                        'Gesamt: ' + d.total +
+                                        'Mitglieder in DB: ' + (d.total_in_db || d.total) +
+                                        ' | Davon mit E-Mail: ' + d.total +
                                         ' | Neu: ' + d.created +
                                         ' | Aktualisiert: ' + d.updated +
-                                        ' | Übersprungen (keine E-Mail): ' + d.skipped +
+                                        ' | Übersprungen (ungültige E-Mail): ' + d.skipped +
                                         (d.duplicates ? ' | Doppelte E-Mail (älteste Person behalten): ' + d.duplicates : '') +
                                         ' | Fehler: ' + d.errors;
                                 } else {
@@ -324,34 +326,117 @@ class EVG_Admin {
                 <p><strong><?php esc_html_e('Letzter Swap:','ev-groups'); ?></strong> <?php echo esc_html($last_swap_ts); ?></p>
                 <?php endif; ?>
                 <p>
-                    <button id="evg-table-swap" class="button button-primary" style="background:#d52623;border-color:#b91c1c;color:#fff">
-                        <?php esc_html_e('Tabellen jetzt übernehmen','ev-groups'); ?>
+                    <button id="evg-swap-preview" class="button button-primary">
+                        <?php esc_html_e('Delta anzeigen (Vorschau)','ev-groups'); ?>
                     </button>
-                    <span id="evg-table-swap-out" style="margin-left:10px;opacity:.9;font-weight:600"></span>
+                    <span id="evg-swap-preview-status" style="margin-left:10px;opacity:.7"></span>
                 </p>
+
+                <!-- Delta-Tabelle (wird per JS befüllt) -->
+                <div id="evg-swap-delta" style="display:none;margin-top:12px">
+                    <table class="widefat fixed striped" style="font-size:13px">
+                        <thead>
+                            <tr>
+                                <th><?php esc_html_e('Tabelle','ev-groups'); ?></th>
+                                <th style="text-align:right"><?php esc_html_e('Live (aktuell)','ev-groups'); ?></th>
+                                <th style="text-align:right"><?php esc_html_e('Nightly (neu)','ev-groups'); ?></th>
+                                <th style="text-align:right"><?php esc_html_e('Differenz','ev-groups'); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody id="evg-swap-delta-rows"></tbody>
+                    </table>
+                    <p style="margin-top:12px">
+                        <button id="evg-table-swap" class="button button-primary" style="background:#d52623;border-color:#b91c1c;color:#fff">
+                            <?php esc_html_e('Jetzt übernehmen','ev-groups'); ?>
+                        </button>
+                        <button id="evg-swap-cancel" class="button" style="margin-left:8px">
+                            <?php esc_html_e('Abbrechen','ev-groups'); ?>
+                        </button>
+                        <span id="evg-table-swap-out" style="margin-left:10px;opacity:.9;font-weight:600"></span>
+                    </p>
+                </div>
+
                 <script>
                 (function(){
-                    document.getElementById('evg-table-swap').addEventListener('click', function(e){
+                    var nonce       = <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>;
+                    var nightlyPfx  = <?php echo wp_json_encode($swap_nightly_p); ?>;
+                    var livePfx     = <?php echo wp_json_encode($swap_live_p); ?>;
+                    var btnPreview  = document.getElementById('evg-swap-preview');
+                    var btnSwap     = document.getElementById('evg-table-swap');
+                    var btnCancel   = document.getElementById('evg-swap-cancel');
+                    var deltaDiv    = document.getElementById('evg-swap-delta');
+                    var deltaRows   = document.getElementById('evg-swap-delta-rows');
+                    var statusSpan  = document.getElementById('evg-swap-preview-status');
+                    var outSpan     = document.getElementById('evg-table-swap-out');
+
+                    function fmt(n) { return n === null || n === undefined ? '–' : parseInt(n).toLocaleString('de-DE'); }
+                    function diffStyle(d) {
+                        if (d > 0) return 'color:#16a34a;font-weight:600';
+                        if (d < 0) return 'color:#dc2626;font-weight:600';
+                        return 'color:#6b7280';
+                    }
+
+                    btnPreview.addEventListener('click', function(e){
                         e.preventDefault();
-                        var msg = <?php echo wp_json_encode(__('Achtung: Die Live-Tabellen werden durch die Nightly-Tabellen ersetzt. Die alten Live-Daten gehen verloren. Wirklich fortfahren?','ev-groups')); ?>;
-                        if (!window.confirm(msg)) { return; }
-                        var out = document.getElementById('evg-table-swap-out');
-                        out.style.color = '';
-                        out.textContent = <?php echo wp_json_encode(__('Swap läuft …','ev-groups')); ?>;
+                        statusSpan.textContent = 'Lade Delta…';
+                        deltaDiv.style.display = 'none';
+                        jQuery.post(ajaxurl, {
+                            action:         'evg_swap_delta',
+                            _wpnonce:       nonce,
+                            nightly_prefix: nightlyPfx,
+                            live_prefix:    livePfx
+                        }, function(r){
+                            statusSpan.textContent = '';
+                            if (!r || !r.success) {
+                                statusSpan.style.color = '#dc2626';
+                                statusSpan.textContent = '✗ ' + (r && r.data ? r.data.message : 'Fehler');
+                                return;
+                            }
+                            var rows = r.data.rows;
+                            var html = '';
+                            rows.forEach(function(row){
+                                var diff = (row.nightly !== null && row.live !== null) ? (row.nightly - row.live) : null;
+                                var diffTxt = diff === null ? '–' : (diff >= 0 ? '+' : '') + diff.toLocaleString('de-DE');
+                                html += '<tr>' +
+                                    '<td><code>' + row.table + '</code></td>' +
+                                    '<td style="text-align:right">' + fmt(row.live) + '</td>' +
+                                    '<td style="text-align:right">' + fmt(row.nightly) + '</td>' +
+                                    '<td style="text-align:right;' + diffStyle(diff) + '">' + diffTxt + '</td>' +
+                                    '</tr>';
+                            });
+                            deltaRows.innerHTML = html;
+                            deltaDiv.style.display = '';
+                            outSpan.textContent = '';
+                        }).fail(function(){ statusSpan.style.color='#dc2626'; statusSpan.textContent='Netzwerkfehler'; });
+                    });
+
+                    btnCancel.addEventListener('click', function(e){
+                        e.preventDefault();
+                        deltaDiv.style.display = 'none';
+                        statusSpan.textContent = '';
+                    });
+
+                    btnSwap.addEventListener('click', function(e){
+                        e.preventDefault();
+                        outSpan.style.color = '';
+                        outSpan.textContent = 'Swap läuft …';
+                        btnSwap.disabled = true;
                         jQuery.post(ajaxurl, {
                             action:         'evg_table_swap',
-                            _wpnonce:       <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>,
-                            nightly_prefix: <?php echo wp_json_encode($swap_nightly_p); ?>,
-                            live_prefix:    <?php echo wp_json_encode($swap_live_p); ?>
+                            _wpnonce:       nonce,
+                            nightly_prefix: nightlyPfx,
+                            live_prefix:    livePfx
                         }, function(r){
+                            btnSwap.disabled = false;
                             if (r && r.success) {
-                                out.style.color = '#16a34a';
-                                out.textContent = '✓ ' + r.data.message;
+                                outSpan.style.color = '#16a34a';
+                                outSpan.textContent = '✓ ' + r.data.message;
+                                deltaDiv.style.display = 'none';
                             } else {
-                                out.style.color = '#dc2626';
-                                out.textContent = '✗ ' + (r && r.data ? r.data.message : 'Unbekannter Fehler');
+                                outSpan.style.color = '#dc2626';
+                                outSpan.textContent = '✗ ' + (r && r.data ? r.data.message : 'Unbekannter Fehler');
                             }
-                        }).fail(function(){ out.style.color='#dc2626'; out.textContent='Netzwerkfehler'; });
+                        }).fail(function(){ btnSwap.disabled=false; outSpan.style.color='#dc2626'; outSpan.textContent='Netzwerkfehler'; });
                     });
                 })();
                 </script>
@@ -778,8 +863,7 @@ class EVG_Admin {
         wp_send_json_error(['message'=>$res['summary']]);
     }
 
-    public function ajax_table_swap(){
-        check_ajax_referer('evg_sync');
+    public function ajax_table_swap(){        check_ajax_referer('evg_sync');
         if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
 
         $allowed_nightly = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'));
@@ -801,5 +885,59 @@ class EVG_Admin {
         } else {
             wp_send_json_error($result);
         }
+    }
+
+    public function ajax_swap_delta(){
+        check_ajax_referer('evg_sync');
+        if (!current_user_can('manage_options')) wp_send_json_error(['message' => 'no capability'], 403);
+
+        $allowed_nightly = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly')) ?: 'evg_nightly';
+        $allowed_live    = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'))          ?: 'evg';
+
+        $req_nightly = evg_sanitize_table_prefix(isset($_POST['nightly_prefix']) ? wp_unslash($_POST['nightly_prefix']) : '');
+        $req_live    = evg_sanitize_table_prefix(isset($_POST['live_prefix'])    ? wp_unslash($_POST['live_prefix'])    : '');
+
+        if ($req_nightly !== $allowed_nightly || $req_live !== $allowed_live) {
+            wp_send_json_error(['message' => 'Ungültiger Präfix-Parameter.']);
+        }
+
+        global $wpdb;
+        $suffixes = [
+            'members'              => 'Mitglieder',
+            'groups'               => 'Gruppen',
+            'member_groups'        => 'Gruppen-Zuordnungen',
+            'custom_fields'        => 'Custom Fields',
+            'member_custom_fields' => 'Custom-Field-Werte',
+            'custom_field_values'  => 'Custom-Field-Optionen',
+        ];
+
+        $rows = [];
+        foreach ($suffixes as $suffix => $label) {
+            $live_table    = $wpdb->prefix . $req_live    . '_' . $suffix;
+            $nightly_table = $wpdb->prefix . $req_nightly . '_' . $suffix;
+
+            $live_count    = null;
+            $nightly_count = null;
+
+            $live_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $live_table));
+            if ($live_exists === $live_table) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $live_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$live_table}`");
+            }
+
+            $nightly_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $nightly_table));
+            if ($nightly_exists === $nightly_table) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $nightly_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$nightly_table}`");
+            }
+
+            $rows[] = [
+                'table'   => $label,
+                'live'    => $live_count,
+                'nightly' => $nightly_count,
+            ];
+        }
+
+        wp_send_json_success(['rows' => $rows]);
     }
 }

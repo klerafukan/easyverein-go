@@ -305,6 +305,8 @@ class EVG_Oidc {
         $members_tbl = $wpdb->prefix . 'evg_members';
         $groups_tbl  = $wpdb->prefix . 'evg_member_groups';
 
+        $total_in_db = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$members_tbl}" );
+
         $members_raw = $wpdb->get_results(
             "SELECT member_id, first_name, family_name, email_private, date_of_birth FROM {$members_tbl}
              WHERE email_private IS NOT NULL AND email_private != ''
@@ -450,13 +452,14 @@ class EVG_Oidc {
         ], false );
 
         wp_send_json_success( [
-            'total'      => $total,
-            'created'    => $created,
-            'updated'    => $updated,
-            'skipped'    => $skipped,
-            'duplicates' => $duplicate_count,
-            'errors'     => count( $errors ),
-            'dry_run'    => $dry_run,
+            'total_in_db' => $total_in_db,
+            'total'       => $total,
+            'created'     => $created,
+            'updated'     => $updated,
+            'skipped'     => $skipped,
+            'duplicates'  => $duplicate_count,
+            'errors'      => count( $errors ),
+            'dry_run'     => $dry_run,
         ] );
     }
 
