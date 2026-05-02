@@ -300,6 +300,8 @@ class EVG_Oidc {
             'errors'   => [],
             'dry_run'  => $dry_run,
         ], false );
+
+        global $wpdb;
         $members_tbl = $wpdb->prefix . 'evg_members';
         $groups_tbl  = $wpdb->prefix . 'evg_member_groups';
 
