@@ -291,17 +291,48 @@ class EVG_Oidc {
             'errors'   => [],
             'dry_run'  => $dry_run,
         ], false );
-
-        global $wpdb;
         $members_tbl = $wpdb->prefix . 'evg_members';
         $groups_tbl  = $wpdb->prefix . 'evg_member_groups';
 
-        $members = $wpdb->get_results(
-            "SELECT member_id, first_name, family_name, email_private FROM {$members_tbl}
+        $members_raw = $wpdb->get_results(
+            "SELECT member_id, first_name, family_name, email_private, date_of_birth FROM {$members_tbl}
              WHERE email_private IS NOT NULL AND email_private != ''
              ORDER BY family_name, first_name",
             ARRAY_A
         );
+
+        // Duplikate bei gleicher E-Mail-Adresse auflösen:
+        // Älteste Person (frühestes date_of_birth) gewinnt – das ist typischerweise
+        // der Elternteil, der die E-Mail-Adresse für sich und das Kind nutzt.
+        // Mitglieder ohne Geburtsdatum gelten als älter (überschreiben Einträge mit Datum).
+        $members_by_email = [];
+        $duplicate_count  = 0;
+        foreach ( $members_raw as $m ) {
+            $email = strtolower( sanitize_email( $m['email_private'] ) );
+            if ( $email === '' ) { continue; }
+
+            if ( ! isset( $members_by_email[ $email ] ) ) {
+                $members_by_email[ $email ] = $m;
+            } else {
+                $existing_dob = $members_by_email[ $email ]['date_of_birth'];
+                $new_dob      = $m['date_of_birth'];
+                // NULL (kein Datum) schlägt jeden konkreten Wert → bleibt stehen
+                // Früheres Datum (ältere Person) schlägt späteres Datum
+                $replace = false;
+                if ( $new_dob === null || $new_dob === '' ) {
+                    // Neuer Eintrag hat kein Datum → ältere Person, ersetzen
+                    $replace = true;
+                } elseif ( $existing_dob !== null && $existing_dob !== '' ) {
+                    // Beide haben ein Datum → früheres gewinnt
+                    $replace = ( strtotime( $new_dob ) < strtotime( $existing_dob ) );
+                }
+                if ( $replace ) {
+                    $members_by_email[ $email ] = $m;
+                }
+                $duplicate_count++;
+            }
+        }
+        $members = array_values( $members_by_email );
 
         $total   = count( $members );
         $created = 0;
@@ -391,23 +422,25 @@ class EVG_Oidc {
 
         // Abschlussstatus
         update_option( self::USERSYNC_PROGRESS_KEY, [
-            'status'  => 'done',
-            'total'   => $total,
-            'done'    => $total,
-            'created' => $created,
-            'updated' => $updated,
-            'skipped' => $skipped,
-            'errors'  => array_slice( $errors, -20 ),
-            'dry_run' => $dry_run,
+            'status'     => 'done',
+            'total'      => $total,
+            'done'       => $total,
+            'created'    => $created,
+            'updated'    => $updated,
+            'skipped'    => $skipped,
+            'duplicates' => $duplicate_count,
+            'errors'     => array_slice( $errors, -20 ),
+            'dry_run'    => $dry_run,
         ], false );
 
         wp_send_json_success( [
-            'total'   => $total,
-            'created' => $created,
-            'updated' => $updated,
-            'skipped' => $skipped,
-            'errors'  => count( $errors ),
-            'dry_run' => $dry_run,
+            'total'      => $total,
+            'created'    => $created,
+            'updated'    => $updated,
+            'skipped'    => $skipped,
+            'duplicates' => $duplicate_count,
+            'errors'     => count( $errors ),
+            'dry_run'    => $dry_run,
         ] );
     }
 

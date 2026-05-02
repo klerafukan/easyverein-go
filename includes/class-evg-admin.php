@@ -252,6 +252,7 @@ class EVG_Admin {
                                     ' | Neu: ' + d.created +
                                     ' | Aktualisiert: ' + d.updated +
                                     ' | Übersprungen (keine E-Mail): ' + d.skipped +
+                                    (d.duplicates ? ' | Doppelte E-Mail (älteste Person behalten): ' + d.duplicates : '') +
                                     ' | Fehler: ' + d.errors;
                             } else {
                                 log.textContent = 'Fehler: ' + JSON.stringify(r);
