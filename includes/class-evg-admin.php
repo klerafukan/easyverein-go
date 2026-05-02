@@ -46,6 +46,10 @@ class EVG_Admin {
         register_setting('evg_settings','evg_nightly_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg_nightly']);
         register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
         register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
+        // OIDC Web-Login
+        register_setting('evg_settings', EVG_Oidc::OPT_CLIENT_ID,    ['sanitize_callback'=>'sanitize_text_field']);
+        register_setting('evg_settings', EVG_Oidc::OPT_REDIRECT_URI, ['sanitize_callback'=>'esc_url_raw']);
+        register_setting('evg_settings', EVG_Oidc::OPT_WEB_LOGIN,    ['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
     }
 
     private function headers(){
@@ -149,6 +153,29 @@ class EVG_Admin {
                         </td>
                     </tr>
                 </table>
+
+                <h2><?php esc_html_e('EasyVerein OIDC – Web-Login für WordPress','ev-groups'); ?></h2>
+                <p class="description"><?php esc_html_e('Ermöglicht die Anmeldung am WP-Backend und Frontend via EasyVerein. Die Callback-URL muss im EasyVerein Identity Provider als Redirect URI eingetragen sein.','ev-groups'); ?></p>
+                <table class="form-table">
+                    <tr>
+                        <th><?php esc_html_e('Web-Login aktivieren','ev-groups'); ?></th>
+                        <td><label><input type="checkbox" name="evg_oidc_web_login_enabled" value="1" <?php checked(1,(int)get_option(EVG_Oidc::OPT_WEB_LOGIN,0)); ?>>
+                            <?php esc_html_e('„Mit EasyVerein anmelden"-Button auf der WP-Login-Seite anzeigen','ev-groups'); ?></label></td>
+                    </tr>
+                    <tr>
+                        <th>OIDC Client-ID</th>
+                        <td><input type="text" name="evg_oidc_client_id" class="regular-text" value="<?php echo esc_attr(get_option(EVG_Oidc::OPT_CLIENT_ID,'')); ?>" placeholder="kTkkaLFd1Qdw…">
+                            <p class="description"><?php esc_html_e('Dieselbe Client-ID wie in der mobilen App (Public Client, kein Secret erforderlich).','ev-groups'); ?></p></td>
+                    </tr>
+                    <tr>
+                        <th><?php esc_html_e('Callback-URL','ev-groups'); ?></th>
+                        <td>
+                            <?php $oidc_inst = new EVG_Oidc(); $cb_url = $oidc_inst->callback_url(); ?>
+                            <input type="text" name="evg_oidc_redirect_uri" class="regular-text" value="<?php echo esc_attr(get_option(EVG_Oidc::OPT_REDIRECT_URI,'')); ?>" placeholder="<?php echo esc_attr($cb_url); ?>">
+                            <p class="description"><?php printf(esc_html__('Standard (automatisch): %s – Diese URL in EasyVerein als Redirect URI hinterlegen.','ev-groups'), '<code>'.esc_html($cb_url).'</code>'); ?></p>
+                        </td>
+                    </tr>
+                </table>
                 <?php submit_button(); ?>
             </form>
 
@@ -164,6 +191,53 @@ class EVG_Admin {
                 </p>
                 <div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden"><span id="evg-bar" style="display:block;height:100%;background:#10b981;width:0%"></span></div>
                 <pre id="evg-log" style="max-height:220px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px"></pre>
+            </div>
+
+            <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
+                <h2><?php esc_html_e('WP-Benutzer aus Mitgliederdaten anlegen / aktualisieren','ev-groups'); ?></h2>
+                <p><?php esc_html_e('Legt für jedes Mitglied mit E-Mail-Adresse einen WordPress-Benutzer an (oder aktualisiert bestehende). Die Gruppenberechtigungen werden übernommen. Login erfolgt ausschließlich per EasyVerein OIDC.','ev-groups'); ?></p>
+                <p>
+                    <button id="evg-usersync-start" class="button button-primary"><?php esc_html_e('WP-Benutzer jetzt synchronisieren','ev-groups'); ?></button>
+                    <button id="evg-usersync-dryrun" class="button" style="margin-left:8px"><?php esc_html_e('Testlauf (keine Änderungen)','ev-groups'); ?></button>
+                    <label style="margin-left:16px">
+                        <input type="checkbox" id="evg-usersync-welcome">
+                        <?php esc_html_e('Willkommens-E-Mail an neu angelegte User senden','ev-groups'); ?>
+                    </label>
+                </p>
+                <pre id="evg-usersync-log" style="max-height:180px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px;display:none"></pre>
+                <script>
+                (function(){
+                    var ajax = ajaxurl;
+                    var n    = <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>;
+                    var log  = document.getElementById('evg-usersync-log');
+                    function run(dry) {
+                        log.style.display = 'block';
+                        log.textContent   = dry ? 'Starte Testlauf…' : 'Starte Sync…';
+                        var welcome = document.getElementById('evg-usersync-welcome').checked ? 1 : 0;
+                        jQuery.post(ajax, {
+                            action:       'evg_wp_usersync_start',
+                            _wpnonce:     n,
+                            dry_run:      dry ? 1 : 0,
+                            send_welcome: welcome
+                        }, function(r) {
+                            if (r && r.success) {
+                                var d = r.data;
+                                var prefix = d.dry_run ? '[TESTLAUF] ' : '';
+                                log.textContent = prefix +
+                                    'Gesamt: ' + d.total +
+                                    ' | Neu: ' + d.created +
+                                    ' | Aktualisiert: ' + d.updated +
+                                    ' | Übersprungen (keine E-Mail): ' + d.skipped +
+                                    ' | Fehler: ' + d.errors;
+                            } else {
+                                log.textContent = 'Fehler: ' + JSON.stringify(r);
+                            }
+                        }).fail(function() { log.textContent = 'Netzwerkfehler'; });
+                    }
+                    document.getElementById('evg-usersync-start').onclick  = function(e) { e.preventDefault(); run(false); };
+                    document.getElementById('evg-usersync-dryrun').onclick = function(e) { e.preventDefault(); run(true);  };
+                })();
+                </script>
             </div>
 
             <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
