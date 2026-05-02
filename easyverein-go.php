@@ -592,7 +592,15 @@ class EVG_Plugin {
      */
     public function run_nightly_sync_cli(){
         if(function_exists('set_time_limit')){ @set_time_limit(0); }
-        echo "[EVG CLI] Starte Sync...\n";
+
+        // Stuck-State zurücksetzen: CLI wird bewusst aufgerufen, kein
+        // laufender Prozess mehr möglich (Cron-Job läuft sequenziell).
+        $raw_prefix = get_option('evg_nightly_sync_table_prefix', self::NIGHTLY_TABLE_PREFIX);
+        $nightly_prefix = EVG_Sync::sanitize_table_prefix($raw_prefix);
+        $tmp_sync = new EVG_Sync($nightly_prefix);
+        delete_option($tmp_sync->get_state_option_key());
+
+        echo "[EVG CLI] Starte Sync (prefix={$nightly_prefix})...\n";
         $this->run_nightly_sync_core();
         echo "[EVG CLI] Fertig.\n";
     }
