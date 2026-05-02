@@ -114,7 +114,11 @@ class EVG_Oidc {
         ], self::EV_AUTHORIZE_URL );
 
         nocache_headers();
-        wp_safe_redirect( $authorize_url );
+        // wp_safe_redirect() erlaubt nur den eigenen Host – für die externe
+        // EasyVerein-Authorize-URL muss wp_redirect() verwendet werden.
+        // Die URL wird ausschließlich aus internen Konstanten + PKCE/State gebaut,
+        // kein User-Input fließt direkt in die URL ein (redirect_to ist im State-Transient).
+        wp_redirect( $authorize_url, 302, 'EasyVerein OIDC' );
         exit;
     }
 
