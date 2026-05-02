@@ -368,8 +368,13 @@ class EVG_Oidc {
                 continue;
             }
 
+            // Im Testlauf: nur zählen, nichts schreiben
             if ( $dry_run ) {
-                $updated++;
+                if ( get_user_by( 'email', $email ) ) {
+                    $updated++;
+                } else {
+                    $created++;
+                }
                 continue;
             }
 
