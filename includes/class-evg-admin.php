@@ -234,30 +234,52 @@ class EVG_Admin {
                     var ajax = ajaxurl;
                     var n    = <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>;
                     var log  = document.getElementById('evg-usersync-log');
+                    var timer;
                     function run(dry) {
                         log.style.display = 'block';
                         log.textContent   = dry ? 'Starte Testlauf…' : 'Starte Sync…';
                         var welcome = document.getElementById('evg-usersync-welcome').checked ? 1 : 0;
-                        jQuery.post(ajax, {
-                            action:       'evg_wp_usersync_start',
-                            _wpnonce:     n,
-                            dry_run:      dry ? 1 : 0,
-                            send_welcome: welcome
-                        }, function(r) {
-                            if (r && r.success) {
-                                var d = r.data;
-                                var prefix = d.dry_run ? '[TESTLAUF] ' : '';
-                                log.textContent = prefix +
-                                    'Gesamt: ' + d.total +
-                                    ' | Neu: ' + d.created +
-                                    ' | Aktualisiert: ' + d.updated +
-                                    ' | Übersprungen (keine E-Mail): ' + d.skipped +
-                                    (d.duplicates ? ' | Doppelte E-Mail (älteste Person behalten): ' + d.duplicates : '') +
-                                    ' | Fehler: ' + d.errors;
-                            } else {
-                                log.textContent = 'Fehler: ' + JSON.stringify(r);
+                        var elapsed = 0;
+                        clearInterval(timer);
+                        timer = setInterval(function(){
+                            elapsed++;
+                            log.textContent = (dry ? 'Testlauf läuft… ' : 'Sync läuft… ') + elapsed + 's';
+                        }, 1000);
+                        jQuery.ajax({
+                            url:     ajax,
+                            method:  'POST',
+                            timeout: 600000, // 10 Minuten
+                            data: {
+                                action:       'evg_wp_usersync_start',
+                                _wpnonce:     n,
+                                dry_run:      dry ? 1 : 0,
+                                send_welcome: welcome
+                            },
+                            success: function(r) {
+                                clearInterval(timer);
+                                if (r && r.success) {
+                                    var d = r.data;
+                                    var prefix = d.dry_run ? '[TESTLAUF] ' : '';
+                                    log.textContent = prefix +
+                                        'Gesamt: ' + d.total +
+                                        ' | Neu: ' + d.created +
+                                        ' | Aktualisiert: ' + d.updated +
+                                        ' | Übersprungen (keine E-Mail): ' + d.skipped +
+                                        (d.duplicates ? ' | Doppelte E-Mail (älteste Person behalten): ' + d.duplicates : '') +
+                                        ' | Fehler: ' + d.errors;
+                                } else {
+                                    log.textContent = 'Fehler: ' + JSON.stringify(r);
+                                }
+                            },
+                            error: function(xhr, status) {
+                                clearInterval(timer);
+                                if (status === 'timeout') {
+                                    log.textContent = 'Timeout – der Sync läuft möglicherweise noch auf dem Server (PHP set_time_limit). Seite nach 1–2 Min. neu laden und prüfen ob User angelegt wurden.';
+                                } else {
+                                    log.textContent = 'Netzwerkfehler (Status: ' + xhr.status + ' ' + xhr.statusText + ')';
+                                }
                             }
-                        }).fail(function() { log.textContent = 'Netzwerkfehler'; });
+                        });
                     }
                     document.getElementById('evg-usersync-start').onclick  = function(e) { e.preventDefault(); run(false); };
                     document.getElementById('evg-usersync-dryrun').onclick = function(e) { e.preventDefault(); run(true);  };

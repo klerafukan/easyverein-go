@@ -277,6 +277,15 @@ class EVG_Oidc {
             wp_send_json_error( 'Keine Berechtigung.' );
         }
 
+        // Zeitlimit aufheben – bei vielen Mitgliedern dauert der Sync länger als das PHP-Limit
+        if ( function_exists( 'set_time_limit' ) ) {
+            @set_time_limit( 0 );
+        }
+        // nginx/fastcgi: Request nicht buffern damit der Client die Antwort bekommt
+        if ( function_exists( 'fastcgi_finish_request' ) ) {
+            ignore_user_abort( true );
+        }
+
         $dry_run      = ! empty( $_POST['dry_run'] );
         $send_welcome = ! empty( $_POST['send_welcome'] );
 
