@@ -583,6 +583,25 @@ class EVG_Plugin {
         return ['ok' => false, 'message' => 'Plugin nicht initialisiert.', 'dropped' => 0];
     }
 
+    /**
+     * Einstiegspunkt für den System-Cron via WP-CLI (kein HTTP-Timeout).
+     * Aufruf: wp eval 'EVG_Plugin::get_instance()->run_nightly_sync_cli();' --path=…
+     */
+    public function run_nightly_sync_cli(){
+        // Auch ohne aktivierten WP-Cron ausführbar (CLI übernimmt das Scheduling)
+        if(!get_option('evg_nightly_sync_enabled',0)){
+            echo "[EVG] Nightly-Sync ist deaktiviert (evg_nightly_sync_enabled=0).\n";
+            return;
+        }
+        // Zeitlimit explizit aufheben
+        if(function_exists('set_time_limit')){ @set_time_limit(0); }
+        $this->run_nightly_sync_core();
+    }
+
+    public static function get_instance(){
+        return self::$instance;
+    }
+
     public function run_nightly_sync(){
         if(!get_option('evg_nightly_sync_enabled',0)){
             return;
@@ -596,6 +615,10 @@ class EVG_Plugin {
             @set_time_limit(0);
         }
 
+        $this->run_nightly_sync_core();
+    }
+
+    private function run_nightly_sync_core(){
         $start_time = microtime(true);
 
         $raw_prefix=get_option('evg_nightly_sync_table_prefix',self::NIGHTLY_TABLE_PREFIX);
