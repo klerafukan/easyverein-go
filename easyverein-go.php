@@ -419,6 +419,21 @@ class EVG_Plugin {
             }
         }
 
+        if(isset($extra['swap_result'])){
+            $lines[]='';
+            $sr = $extra['swap_result'];
+            if($sr === null){
+                $lines[]='=== Tabellen-Swap ===';
+                $lines[]='Auto-Swap ist deaktiviert – Tabellen wurden nicht übernommen.';
+            } elseif(!empty($sr['ok'])){
+                $lines[]='=== Tabellen-Swap: ERFOLGREICH ===';
+                $lines[]=$sr['message'];
+            } else {
+                $lines[]='=== Tabellen-Swap: FEHLGESCHLAGEN ===';
+                $lines[]=$sr['message'];
+            }
+        }
+
         wp_mail($report_email,$subject,implode("\n",$lines));
     }
 
@@ -469,6 +484,103 @@ class EVG_Plugin {
         $dir = dirname($log_file);
         if (!is_dir($dir)) { wp_mkdir_p($dir); }
         @file_put_contents($log_file, '['.date('H:i:s').'] '.$message."\n", FILE_APPEND | LOCK_EX);
+    }
+
+    /**
+     * Atomisches Umschalten der Nightly-Tabellen in die Live-Tabellen.
+     *
+     * Führt ein einziges MySQL RENAME TABLE aus, das alle 6 Tabellen gleichzeitig
+     * umbenennt (live → old, nightly → live). Schlägt ein Rename fehl, bleibt der
+     * gesamte Vorgang ohne Auswirkung (MySQL-Atomizität). Danach werden die
+     * alten Live-Tabellen (wp_…_old_…) gelöscht.
+     *
+     * @param  string $nightly_prefix Quell-Präfix (z.B. "evg_nightly")
+     * @param  string $live_prefix    Ziel-Präfix   (z.B. "evg")
+     * @return array  ['ok'=>bool, 'message'=>string, 'dropped'=>int]
+     */
+    public function perform_table_swap(string $nightly_prefix, string $live_prefix): array {
+        global $wpdb;
+
+        $nightly_prefix = EVG_Sync::sanitize_table_prefix($nightly_prefix);
+        $live_prefix    = EVG_Sync::sanitize_table_prefix($live_prefix);
+
+        if ($nightly_prefix === '' || $live_prefix === '') {
+            return ['ok' => false, 'message' => 'Ungültiger Tabellen-Präfix.', 'dropped' => 0];
+        }
+        if ($nightly_prefix === $live_prefix) {
+            return ['ok' => false, 'message' => 'Quell- und Ziel-Präfix sind identisch.', 'dropped' => 0];
+        }
+
+        $suffixes = ['groups', 'members', 'member_groups', 'custom_fields', 'member_custom_fields', 'custom_field_values'];
+        $db_prefix = $wpdb->prefix;
+
+        // Prüfen ob alle Nightly-Tabellen existieren
+        foreach ($suffixes as $s) {
+            $t = $db_prefix . $nightly_prefix . '_' . $s;
+            $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $t));
+            if ($exists !== $t) {
+                return ['ok' => false, 'message' => sprintf('Nightly-Tabelle fehlt: %s', esc_html($t)), 'dropped' => 0];
+            }
+        }
+
+        // Atomisches RENAME: live → old_live, nightly → live
+        // Einzelne Statement → MySQL führt alles oder nichts aus
+        $parts = [];
+        foreach ($suffixes as $s) {
+            $live    = $db_prefix . $live_prefix    . '_' . $s;
+            $nightly = $db_prefix . $nightly_prefix . '_' . $s;
+            $old     = $db_prefix . $live_prefix    . '_old_' . $s;
+            // Existierende Live-Tabelle → old; nightly → live
+            $live_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $live));
+            if ($live_exists === $live) {
+                $parts[] = "`{$live}` TO `{$old}`, `{$nightly}` TO `{$live}`";
+            } else {
+                // Falls Live-Tabelle noch nicht existiert (Erstinbetriebnahme): direkt umbenennen
+                $parts[] = "`{$nightly}` TO `{$live}`";
+            }
+        }
+
+        if (empty($parts)) {
+            return ['ok' => false, 'message' => 'Keine Umbenennung möglich.', 'dropped' => 0];
+        }
+
+        $sql = 'RENAME TABLE ' . implode(', ', $parts);
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $result = $wpdb->query($sql);
+
+        if ($result === false) {
+            $err = $wpdb->last_error ?: 'Unbekannter DB-Fehler';
+            return ['ok' => false, 'message' => 'RENAME TABLE fehlgeschlagen: ' . $err, 'dropped' => 0];
+        }
+
+        // Nightly-Tabellen neu anlegen (für nächsten Lauf), alte Live-Tabellen löschen
+        $dropped = 0;
+        foreach ($suffixes as $s) {
+            $old = $db_prefix . $live_prefix . '_old_' . $s;
+            $exists_old = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $old));
+            if ($exists_old === $old) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $wpdb->query("DROP TABLE IF EXISTS `{$old}`");
+                $dropped++;
+            }
+        }
+
+        // Nightly-Tabellen neu erstellen, damit der nächste Nightly-Sync direkt loslegen kann
+        $this->ensure_tables_for_prefix($nightly_prefix);
+
+        update_option('evg_last_table_swap', current_time('mysql', 1), false);
+        $msg = sprintf(
+            'Swap erfolgreich: %s → %s (%d alte Tabellen gelöscht, Nightly-Tabellen neu angelegt)',
+            $nightly_prefix, $live_prefix, $dropped
+        );
+        return ['ok' => true, 'message' => $msg, 'dropped' => $dropped];
+    }
+
+    public static function run_manual_table_swap(string $nightly_prefix, string $live_prefix): array {
+        if (self::$instance instanceof self) {
+            return self::$instance->perform_table_swap($nightly_prefix, $live_prefix);
+        }
+        return ['ok' => false, 'message' => 'Plugin nicht initialisiert.', 'dropped' => 0];
     }
 
     public function run_nightly_sync(){
@@ -573,9 +685,19 @@ class EVG_Plugin {
         }
 
         $elapsed = microtime(true) - $start_time;
+        $swap_result = null;
         if ($sync_success) {
             update_option('evg_last_sync_completed', current_time('mysql', 1), false);
             $this->append_nightly_log($log_file, sprintf('FERTIG in %.1fs | %d Iterationen', $elapsed, $iteration));
+
+            // Auto-Swap: Nightly-Tabellen → Live-Tabellen, wenn aktiviert
+            if (get_option('evg_nightly_auto_swap', 0)) {
+                $live_prefix = EVG_Sync::sanitize_table_prefix(get_option('evg_manual_sync_table_prefix', 'evg'));
+                if ($live_prefix === '') { $live_prefix = 'evg'; }
+                $this->append_nightly_log($log_file, sprintf('AUTO-SWAP gestartet: %s → %s', $nightly_prefix, $live_prefix));
+                $swap_result = $this->perform_table_swap($nightly_prefix, $live_prefix);
+                $this->append_nightly_log($log_file, 'AUTO-SWAP: '.($swap_result['ok'] ? 'OK' : 'FEHLER').': '.$swap_result['message']);
+            }
         } else {
             $this->append_nightly_log($log_file, sprintf('FEHLGESCHLAGEN nach %.1fs | %d Iterationen', $elapsed, $iteration));
         }
@@ -606,6 +728,7 @@ class EVG_Plugin {
             'stuck_info'   => $stuck_info,
             'last_phase'   => isset($state_final['phase']) ? $state_final['phase'] : '',
             'wpdb_error'   => $wpdb->last_error,
+            'swap_result'  => $swap_result,
         ];
         $this->send_sync_report($sync_success,$db_counts,$state_counts,$error_message,$tick_log,$nightly_prefix,$extra);
     }

@@ -9,6 +9,7 @@ class EVG_Admin {
         add_action('wp_ajax_evg_sync_tick', [$this,'ajax_sync_tick']);
         add_action('wp_ajax_evg_test_connection', [$this,'ajax_test_connection']);
         add_action('wp_ajax_evg_nightly_log', [$this,'ajax_nightly_log']);
+        add_action('wp_ajax_evg_table_swap',  [$this,'ajax_table_swap']);
 
         add_action('show_user_profile', [$this,'user_groups_fields']);
         add_action('edit_user_profile',  [$this,'user_groups_fields']);
@@ -46,6 +47,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_nightly_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg_nightly']);
         register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
         register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
+        register_setting('evg_settings','evg_nightly_auto_swap',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         // OIDC Web-Login
         register_setting('evg_settings', EVG_Oidc::OPT_CLIENT_ID,    ['sanitize_callback'=>'sanitize_text_field']);
         register_setting('evg_settings', EVG_Oidc::OPT_REDIRECT_URI, ['sanitize_callback'=>'esc_url_raw']);
@@ -143,8 +145,30 @@ class EVG_Admin {
                                 <?php esc_html_e('Standard: evg_nightly – für produktive Tabellen „evg“ eintragen. Eigene Werte werden automatisch bereinigt (a–z, 0–9, Unterstrich).','ev-groups'); ?>
                             </p>
                         </td>
-                    </tr>
-                    <tr>
+                    </tr>                    <tr>
+                        <th><?php esc_html_e('Auto-Swap nach Nightly Sync','ev-groups'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="evg_nightly_auto_swap" value="1" <?php checked(1,(int)get_option('evg_nightly_auto_swap',0)); ?>>
+                                <?php esc_html_e('Nach erfolgreichem nächtlichen Sync die Nightly-Tabellen automatisch in die Live-Tabellen übernehmen','ev-groups'); ?>
+                            </label>
+                            <p class="description">
+                                <?php
+                                $live_p = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg')) ?: 'evg';
+                                $nightly_p = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly')) ?: 'evg_nightly';
+                                printf(
+                                    esc_html__('Die Tabellen mit Präfix „%1$s" werden atomar (RENAME TABLE) durch die frisch synchronisierten Tabellen mit Präfix „%2$s" ersetzt. Schlägt der Sync fehl, findet kein Swap statt.','ev-groups'),
+                                    '<code>'.esc_html($nightly_p).'</code>',
+                                    '<code>'.esc_html($live_p).'</code>'
+                                );
+                                $last_swap = get_option('evg_last_table_swap','');
+                                if ($last_swap) {
+                                    echo ' <strong>'.esc_html__('Letzter Swap:','ev-groups').' '.esc_html($last_swap).'</strong>';
+                                }
+                                ?>
+                            </p>
+                        </td>
+                    </tr>                    <tr>
                         <th><?php esc_html_e('Empfänger Sync-Protokoll','ev-groups'); ?></th>
                         <td>
                             <?php $report_email = get_option('evg_sync_report_email',''); ?>
@@ -258,7 +282,57 @@ class EVG_Admin {
                 <div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden"><span id="evg-nightly-bar" style="display:block;height:100%;background:#6366f1;width:0%"></span></div>
                 <pre id="evg-nightly-log" style="max-height:220px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px"></pre>
             </div>
-        </div>
+
+            <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
+                <h2><?php esc_html_e('Nightly → Live übernehmen (manueller Swap)','ev-groups'); ?></h2>
+                <?php
+                $swap_live_p    = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg')) ?: 'evg';
+                $swap_nightly_p = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly')) ?: 'evg_nightly';
+                $last_swap_ts   = get_option('evg_last_table_swap','');
+                ?>
+                <p>
+                    <?php printf(
+                        esc_html__('Ersetzt die Live-Tabellen (Präfix „%1$s") atomar durch die zuletzt synchronisierten Nightly-Tabellen (Präfix „%2$s"). Der Vorgang ist nicht umkehrbar – die alten Live-Tabellen werden danach gelöscht.','ev-groups'),
+                        '<code>'.esc_html($swap_live_p).'</code>',
+                        '<code>'.esc_html($swap_nightly_p).'</code>'
+                    ); ?>
+                </p>
+                <?php if ($last_swap_ts): ?>
+                <p><strong><?php esc_html_e('Letzter Swap:','ev-groups'); ?></strong> <?php echo esc_html($last_swap_ts); ?></p>
+                <?php endif; ?>
+                <p>
+                    <button id="evg-table-swap" class="button button-primary" style="background:#d52623;border-color:#b91c1c;color:#fff">
+                        <?php esc_html_e('Tabellen jetzt übernehmen','ev-groups'); ?>
+                    </button>
+                    <span id="evg-table-swap-out" style="margin-left:10px;opacity:.9;font-weight:600"></span>
+                </p>
+                <script>
+                (function(){
+                    document.getElementById('evg-table-swap').addEventListener('click', function(e){
+                        e.preventDefault();
+                        var msg = <?php echo wp_json_encode(__('Achtung: Die Live-Tabellen werden durch die Nightly-Tabellen ersetzt. Die alten Live-Daten gehen verloren. Wirklich fortfahren?','ev-groups')); ?>;
+                        if (!window.confirm(msg)) { return; }
+                        var out = document.getElementById('evg-table-swap-out');
+                        out.style.color = '';
+                        out.textContent = <?php echo wp_json_encode(__('Swap läuft …','ev-groups')); ?>;
+                        jQuery.post(ajaxurl, {
+                            action:         'evg_table_swap',
+                            _wpnonce:       <?php echo wp_json_encode(wp_create_nonce('evg_sync')); ?>,
+                            nightly_prefix: <?php echo wp_json_encode($swap_nightly_p); ?>,
+                            live_prefix:    <?php echo wp_json_encode($swap_live_p); ?>
+                        }, function(r){
+                            if (r && r.success) {
+                                out.style.color = '#16a34a';
+                                out.textContent = '✓ ' + r.data.message;
+                            } else {
+                                out.style.color = '#dc2626';
+                                out.textContent = '✗ ' + (r && r.data ? r.data.message : 'Unbekannter Fehler');
+                            }
+                        }).fail(function(){ out.style.color='#dc2626'; out.textContent='Netzwerkfehler'; });
+                    });
+                })();
+                </script>
+            </div>
         <script>
         (function(){
             var EVGAdmin = <?php echo wp_json_encode([
@@ -607,8 +681,7 @@ class EVG_Admin {
 
     public function ajax_nightly_log(){
         check_ajax_referer('evg_sync');
-        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
-        $file = isset($_POST['file']) ? sanitize_file_name(wp_unslash($_POST['file'])) : '';
+        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);        $file = isset($_POST['file']) ? sanitize_file_name(wp_unslash($_POST['file'])) : '';
         if (!preg_match('/^nightly-[0-9]{8}-[0-9]{6}\.log$/', $file)) {
             wp_send_json_error(['message'=>'Ungültiger Dateiname']);
         }
@@ -677,5 +750,30 @@ class EVG_Admin {
         $res=$sync->job_tick();
         if($res['ok']) wp_send_json_success($res);
         wp_send_json_error(['message'=>$res['summary']]);
+    }
+
+    public function ajax_table_swap(){
+        check_ajax_referer('evg_sync');
+        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+
+        $allowed_nightly = evg_sanitize_table_prefix(get_option('evg_nightly_sync_table_prefix','evg_nightly'));
+        $allowed_live    = evg_sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'));
+        if ($allowed_nightly === '') { $allowed_nightly = 'evg_nightly'; }
+        if ($allowed_live    === '') { $allowed_live    = 'evg'; }
+
+        $req_nightly = evg_sanitize_table_prefix(isset($_POST['nightly_prefix']) ? wp_unslash($_POST['nightly_prefix']) : '');
+        $req_live    = evg_sanitize_table_prefix(isset($_POST['live_prefix'])    ? wp_unslash($_POST['live_prefix'])    : '');
+
+        // Nur die konfigurierten Präfixe akzeptieren – keine Freitexteingaben
+        if ($req_nightly !== $allowed_nightly || $req_live !== $allowed_live) {
+            wp_send_json_error(['message' => 'Ungültiger Präfix-Parameter.']);
+        }
+
+        $result = EVG_Plugin::run_manual_table_swap($req_nightly, $req_live);
+        if ($result['ok']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
     }
 }
