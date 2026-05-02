@@ -501,7 +501,10 @@ class EVG_Admin {
     }
 
     public function user_groups_fields($user){
-        if (!current_user_can('edit_user', $user->ID)) return;
+        // Nur WP-Administratoren dürfen Gruppen-Zuordnungen sehen und ändern.
+        // Normale Mitglieder (z.B. per OIDC eingeloggt) sollen ihr eigenes Profil
+        // nicht manipulieren können.
+        if (!current_user_can('manage_options')) return;
         global $wpdb;
         $g_table = $wpdb->prefix.'evg_groups';
         $groups = $wpdb->get_results("SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label, COALESCE(NULLIF(short,''), '') AS short FROM $g_table ORDER BY label ASC", ARRAY_A);
@@ -647,7 +650,7 @@ class EVG_Admin {
     }
 
     public function save_user_groups($user_id){
-        if (!current_user_can('edit_user', $user_id)) return;
+        if (!current_user_can('manage_options')) return;
         $allow_all = isset($_POST['evg_groups_all']) ? 1 : 0;
         update_user_meta($user_id, 'evg_groups_all', $allow_all);
         $ids = isset($_POST['evg_groups_selected']) ? (array) $_POST['evg_groups_selected'] : [];
