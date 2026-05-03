@@ -21,6 +21,7 @@ require_once EVG_PATH.'includes/class-evg-calendar-widget.php';
 require_once EVG_PATH.'includes/class-evg-frontend.php';
 require_once EVG_PATH.'includes/class-evg-api.php';
 require_once EVG_PATH.'includes/class-evg-oidc.php';
+require_once EVG_PATH.'includes/class-evg-training-hours.php';
 
 class EVG_Plugin {
     private const CRON_HOOK        = 'evg_nightly_sync';
@@ -34,6 +35,7 @@ class EVG_Plugin {
         register_activation_hook(__FILE__,[$this,'on_activate']);
         register_deactivation_hook(__FILE__,[$this,'on_deactivate']);
         add_action('plugins_loaded',[$this,'init']);
+        new EVG_Training_Hours();
         add_action(self::CRON_HOOK,[$this,'run_nightly_sync']);
         add_action(self::EVENTS_CRON_HOOK,[$this,'run_events_sync_cron']);
         add_action('update_option_evg_nightly_sync_enabled',[$this,'handle_nightly_toggle'],10,3);
@@ -67,6 +69,7 @@ class EVG_Plugin {
         }
         EVG_Api::ensure_change_requests_table();
         EVG_Events_Sync::ensure_tables();
+        EVG_Training_Hours::ensure_table();
     }
     public function on_deactivate(){
         $this->clear_cron();

@@ -1,0 +1,48 @@
+/* EVG Training Hours – Admin Styles */
+
+.evg-th-wrap { max-width: 1100px; }
+
+.evg-th-badge {
+    display: inline-block;
+    background: #d63638;
+    color: #fff;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 7px;
+    line-height: 20px;
+    vertical-align: middle;
+    margin-left: 6px;
+}
+
+.evg-th-filters {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin: 16px 0;
+}
+.evg-th-filters select { min-width: 160px; }
+
+.evg-th-table td, .evg-th-table th { vertical-align: middle; }
+
+.evg-th-bulk-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 12px;
+    padding: 12px;
+    background: #f6f7f7;
+    border-radius: 4px;
+}
+
+.evg-th-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.evg-th-status--pending  { background: #f0f0f0; color: #555; }
+.evg-th-status--approved { background: #d8f0c8; color: #2a6e00; }
+.evg-th-status--paid     { background: #cce4f6; color: #005082; }
+.evg-th-status--rejected { background: #fde8d8; color: #8b3000; }

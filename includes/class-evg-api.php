@@ -643,15 +643,19 @@ HTML;
         $ev_sub       = (string) get_user_meta( $user_id, 'evg_oidc_sub', true );
         $direct_write = (bool) $user->has_cap( 'evg_direct_write' );
 
+        $is_uebungsleiter = current_user_can('manage_options')
+            || (bool)(int) get_user_meta( $user_id, 'evg_is_uebungsleiter', true );
+
         return new WP_REST_Response( [
-            'wp_user_id'       => $user_id,
-            'display_name'     => $user->display_name,
-            'email'            => $user->user_email,
-            'ev_sub'           => $ev_sub,
-            'allow_all_groups' => (bool) $allow_all,
-            'allowed_group_ids'=> $allow_all ? [] : $groups,
+            'wp_user_id'         => $user_id,
+            'display_name'       => $user->display_name,
+            'email'              => $user->user_email,
+            'ev_sub'             => $ev_sub,
+            'allow_all_groups'   => (bool) $allow_all,
+            'allowed_group_ids'  => $allow_all ? [] : $groups,
             'can_submit_changes' => true,
             'can_direct_write'   => $direct_write,
+            'is_uebungsleiter'   => $is_uebungsleiter,
         ], 200 );
     }
 
