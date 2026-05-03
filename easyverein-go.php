@@ -16,12 +16,15 @@ define('EVG_URL', plugin_dir_url(__FILE__));
 require_once EVG_PATH.'includes/evg-utils.php';
 require_once EVG_PATH.'includes/class-evg-admin.php';
 require_once EVG_PATH.'includes/class-evg-sync.php';
+require_once EVG_PATH.'includes/class-evg-events-sync.php';
+require_once EVG_PATH.'includes/class-evg-calendar-widget.php';
 require_once EVG_PATH.'includes/class-evg-frontend.php';
 require_once EVG_PATH.'includes/class-evg-api.php';
 require_once EVG_PATH.'includes/class-evg-oidc.php';
 
 class EVG_Plugin {
-    private const CRON_HOOK = 'evg_nightly_sync';
+    private const CRON_HOOK        = 'evg_nightly_sync';
+    private const EVENTS_CRON_HOOK = 'evg_events_sync';
     private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
     private static $instance = null;
@@ -32,6 +35,7 @@ class EVG_Plugin {
         register_deactivation_hook(__FILE__,[$this,'on_deactivate']);
         add_action('plugins_loaded',[$this,'init']);
         add_action(self::CRON_HOOK,[$this,'run_nightly_sync']);
+        add_action(self::EVENTS_CRON_HOOK,[$this,'run_events_sync_cron']);
         add_action('update_option_evg_nightly_sync_enabled',[$this,'handle_nightly_toggle'],10,3);
     }
     public function on_activate(){
@@ -62,6 +66,7 @@ class EVG_Plugin {
             $this->ensure_tables_for_prefix(self::NIGHTLY_TABLE_PREFIX);
         }
         EVG_Api::ensure_change_requests_table();
+        EVG_Events_Sync::ensure_tables();
     }
     public function on_deactivate(){
         $this->clear_cron();
@@ -241,11 +246,13 @@ class EVG_Plugin {
         if ($nightly_prefix !== '' && $nightly_prefix !== 'evg' && $nightly_prefix !== $manual_prefix){
             $this->ensure_tables_for_prefix($nightly_prefix);
         }
+        EVG_Events_Sync::ensure_tables();
         $this->migrate_api_paths_to_v3();
         $this->ensure_runtime_option_defaults();
         new EVG_Admin();
         new EVG_Sync();
         new EVG_Frontend();
+        new EVG_Calendar_Widget();
         new EVG_Api();
         new EVG_Oidc();
         add_action('init',[$this,'maybe_schedule_cron']);
@@ -463,21 +470,44 @@ class EVG_Plugin {
             wp_schedule_event($this->next_cron_timestamp(),'daily',self::CRON_HOOK);
         }
     }
+    private function schedule_events_cron(){
+        if(!wp_next_scheduled(self::EVENTS_CRON_HOOK)){
+            // Alle 15 Minuten – WP-interne Häufigkeit registrieren
+            if(!wp_get_schedule('evg_fifteen_minutes')){
+                add_filter('cron_schedules',function($s){
+                    $s['evg_fifteen_minutes']=['interval'=>900,'display'=>'Alle 15 Minuten (EVG)'];
+                    return $s;
+                });
+            }
+            wp_schedule_event(time(),'evg_fifteen_minutes',self::EVENTS_CRON_HOOK);
+        }
+    }
     private function clear_cron(){
         wp_clear_scheduled_hook(self::CRON_HOOK);
+        wp_clear_scheduled_hook(self::EVENTS_CRON_HOOK);
     }
     public function maybe_schedule_cron(){
         if(get_option('evg_nightly_sync_enabled',0)){
             $this->schedule_cron();
         } else {
-            $this->clear_cron();
+            wp_clear_scheduled_hook(self::CRON_HOOK);
         }
+        $this->schedule_events_cron();
     }
     public function handle_nightly_toggle($old_value,$value,$option){
         if((int)$value){
             $this->schedule_cron();
         } else {
-            $this->clear_cron();
+            wp_clear_scheduled_hook(self::CRON_HOOK);
+        }
+    }
+
+    /** WP-Cron-Callback für den Events-Sync */
+    public function run_events_sync_cron(): void {
+        $sync   = new EVG_Events_Sync();
+        $result = $sync->run();
+        if ( (int) get_option('evg_debug', 0) ) {
+            error_log( '[EVG Events Sync] ' . wp_json_encode( $result ) );
         }
     }
     private function append_nightly_log($log_file, $message){

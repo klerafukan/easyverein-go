@@ -594,11 +594,12 @@ class EVG_Admin {
 
     public function admin_bar_version($wp_admin_bar){
         if (!current_user_can('manage_options')) return;
+        $app_version = get_option('evg_app_min_version', '–');
         $wp_admin_bar->add_node([
             'id'    => 'evg-version',
-            'title' => 'EVG ' . EVG_VERSION,
+            'title' => 'EVG ' . EVG_VERSION . ' &nbsp;|&nbsp; App ' . esc_html($app_version),
             'href'  => admin_url('admin.php?page='.EVG_SLUG),
-            'meta'  => ['title' => 'Easyverein Go ' . EVG_VERSION],
+            'meta'  => ['title' => 'Easyverein Go ' . EVG_VERSION . ' | App min. ' . $app_version],
         ]);
     }
 

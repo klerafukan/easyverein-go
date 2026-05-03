@@ -52,6 +52,19 @@ Der Shortcode `[easyverein_table]` rendert synchronisierte Mitglieder als sortie
 - Responsives Kartenlayout auf kleinen Viewports
 - Sichtbarkeit beschränkt auf eingeloggte WordPress-Benutzer
 
+### Frontend-Kalender für Termine
+
+Der Shortcode `[evg_calendar]` rendert einen interaktiven Monats-Kalender aus den synchronisierten EasyVerein-Terminen:
+
+- **Read-Only** – zeigt standardmäßig nur öffentliche Termine (`is_public = 1`)
+- **Monat-Navigation** mit Prev/Next-Tasten
+- **Farbige Event-Punkte** pro Tag (Farbe = Kalender-Farbe aus EasyVerein)
+- **Tages-Popup** beim Klick auf einen Tag mit Terminen (Zeit + Termin-Name)
+- **Detail-Modal** beim Klick auf einen Termin (Titel, Kalender, Uhrzeit, Ort, Beschreibung)
+- **Kalender-Legende** mit Farbzuordnung unterhalb des Grids
+- Responsiv (mobile-gerecht), kein Login erforderlich
+- AJAX-basiertes Laden pro Monat mit clientseitigem Cache (kein erneutes Laden beim Navigieren)
+
 ### Benutzerbezogene Gruppenfreigabe
 
 Admins legen im WordPress-Benutzerprofil fest, ob ein User alle EasyVerein-Gruppen oder nur eine definierte Teilmenge sieht. Die Einstellung wirkt sich auf den Gruppenfilter und die angezeigte Datenmenge im Frontend aus.
@@ -120,6 +133,33 @@ Im WordPress-Benutzerprofil lassen sich alle synchronisierten Feld/Wert-Kombinat
 | `updated_at` | Stand (letztes Datenbank-Update) |
 
 Wird `columns` weggelassen, werden die in `EVG_Frontend::DEFAULT_COLUMNS` hinterlegten Standardspalten verwendet.
+
+---
+
+## Kalender-Shortcode
+
+```
+[evg_calendar]
+[evg_calendar title="Vereinstermine"]
+[evg_calendar calendars="12,34" public_only="1"]
+```
+
+### Parameter
+
+| Parameter | Typ | Standard | Beschreibung |
+|---|---|---|---|
+| `title` | string | *(leer)* | Überschrift über dem Kalender |
+| `calendars` | string | *(alle)* | Kommagetrennte Kalender-IDs (aus EasyVerein) zur Filterung |
+| `public_only` | int | `1` | `1` = nur öffentliche Termine · `0` = alle Termine anzeigen |
+
+### Beispiele
+
+```
+[evg_calendar title="Termine im Mai"]
+[evg_calendar calendars="5,12" public_only="1"]
+```
+
+Der Kalender kann auf beliebigen Seiten und Beiträgen eingebettet werden. Er benötigt keinen eingeloggten Benutzer.
 
 ---
 

@@ -236,6 +236,42 @@ class EVG_Api {
             'permission_callback' => '__return_true',
         ] );
 
+        // Öffentlich – kein Token nötig, auch vor dem Login abrufbar
+        register_rest_route( 'easyverein-go/v1', '/app-version', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_app_version'],
+            'permission_callback' => '__return_true',
+        ] );
+
+        // ── Termine & Kalender ───────────────────────────────────────────────
+        register_rest_route( 'easyverein-go/v1', '/events', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_events'],
+            'permission_callback' => $auth,
+            'args' => [
+                'from'     => [ 'required' => false, 'type' => 'string',  'sanitize_callback' => 'sanitize_text_field' ],
+                'to'       => [ 'required' => false, 'type' => 'string',  'sanitize_callback' => 'sanitize_text_field' ],
+                'calendar' => [ 'required' => false, 'type' => 'string',  'sanitize_callback' => 'sanitize_text_field' ],
+                'limit'    => [ 'required' => false, 'type' => 'integer', 'default' => 200, 'minimum' => 1, 'maximum' => 500 ],
+                'offset'   => [ 'required' => false, 'type' => 'integer', 'default' => 0,   'minimum' => 0 ],
+            ],
+        ] );
+
+        register_rest_route( 'easyverein-go/v1', '/events/(?P<id>\\d+)', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_event_detail'],
+            'permission_callback' => $auth,
+            'args' => [
+                'id' => [ 'required' => true, 'type' => 'integer', 'minimum' => 1 ],
+            ],
+        ] );
+
+        register_rest_route( 'easyverein-go/v1', '/calendars', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_calendars'],
+            'permission_callback' => $auth,
+        ] );
+
         register_rest_route( 'easyverein-go/v1', '/change-requests', [
             [
                 'methods'             => WP_REST_Server::READABLE,
@@ -255,6 +291,171 @@ class EVG_Api {
                 ],
             ],
         ] );
+    }
+
+    // -------------------------------------------------------------------------
+    // /app-version  – Öffentlich; teilt der App mit welche Mindestversion nötig ist
+    // -------------------------------------------------------------------------
+
+    public function rest_app_version(): WP_REST_Response {
+        return new WP_REST_Response( [
+            'min_version'  => get_option( 'evg_app_min_version',      '1.0.0' ),
+            'message'      => get_option( 'evg_app_update_message',    'Bitte aktualisiere die App, um sie weiter nutzen zu können.' ),
+            'ios_url'      => get_option( 'evg_app_store_ios',         '' ),
+            'android_url'  => get_option( 'evg_app_store_android',     'https://play.google.com/store/apps/details?id=de.tvmiesbach.app' ),
+        ], 200 );
+    }
+
+    // -------------------------------------------------------------------------
+    // /events  – Terminliste aus der lokalen WP-DB
+    // -------------------------------------------------------------------------
+
+    public function rest_events( WP_REST_Request $request ): WP_REST_Response {
+        global $wpdb;
+
+        $from     = sanitize_text_field( $request->get_param('from') ?? '' );
+        $to       = sanitize_text_field( $request->get_param('to')   ?? '' );
+        $calendar = sanitize_text_field( $request->get_param('calendar') ?? '' );
+        $limit    = max( 1, min( 500, (int) $request->get_param('limit')  ) );
+        $offset   = max( 0, (int) $request->get_param('offset') );
+
+        // Defaults: heute bis 12 Monate voraus
+        if ( $from === '' ) $from = current_time('Y-m-d') . ' 00:00:00';
+        if ( $to   === '' ) $to   = gmdate('Y-m-d H:i:s', strtotime('+12 months'));
+
+        $where   = 'WHERE e.start_dt >= %s AND e.start_dt <= %s AND e.is_reservation = 0';
+        $params  = [ $from, $to ];
+
+        if ( $calendar !== '' ) {
+            $ids = array_map('intval', explode(',', $calendar));
+            $ids = array_filter($ids);
+            if ( $ids ) {
+                $phs    = implode(',', array_fill(0, count($ids), '%d'));
+                $where .= " AND e.calendar_id IN ({$phs})";
+                $params  = array_merge($params, $ids);
+            }
+        }
+
+        $sql_count  = $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}evg_events e {$where}", ...$params );
+        $total      = (int) $wpdb->get_var( $sql_count );
+
+        $params[]   = $limit;
+        $params[]   = $offset;
+        $sql_items  = $wpdb->prepare(
+            "SELECT e.*, c.name AS cal_name, c.color AS cal_color, c.short_code AS cal_short,
+                    l.city AS loc_city, l.street AS loc_street, l.zip AS loc_zip
+             FROM {$wpdb->prefix}evg_events e
+             LEFT JOIN {$wpdb->prefix}evg_calendars c ON c.id = e.calendar_id
+             LEFT JOIN {$wpdb->prefix}evg_locations l ON l.id = e.location_id
+             {$where}
+             ORDER BY e.start_dt ASC
+             LIMIT %d OFFSET %d",
+            ...$params
+        );
+
+        $rows   = $wpdb->get_results( $sql_items, ARRAY_A ) ?: [];
+        $events = array_map( [$this, 'format_event_row'], $rows );
+
+        return new WP_REST_Response( [
+            'total'     => $total,
+            'synced_at' => get_option( 'evg_events_synced_at', '' ),
+            'events'    => $events,
+        ], 200 );
+    }
+
+    public function rest_event_detail( WP_REST_Request $request ): WP_REST_Response {
+        global $wpdb;
+        $id = (int) $request->get_param('id');
+
+        $row = $wpdb->get_row( $wpdb->prepare(
+            "SELECT e.*, c.name AS cal_name, c.color AS cal_color, c.short_code AS cal_short,
+                    l.city AS loc_city, l.street AS loc_street, l.zip AS loc_zip
+             FROM {$wpdb->prefix}evg_events e
+             LEFT JOIN {$wpdb->prefix}evg_calendars c ON c.id = e.calendar_id
+             LEFT JOIN {$wpdb->prefix}evg_locations l ON l.id = e.location_id
+             WHERE e.id = %d",
+            $id
+        ), ARRAY_A );
+
+        if ( ! $row ) {
+            return new WP_REST_Response( ['message' => 'Termin nicht gefunden.'], 404 );
+        }
+
+        return new WP_REST_Response( $this->format_event_row( $row ), 200 );
+    }
+
+    // -------------------------------------------------------------------------
+    // /calendars  – Kalendergruppen-Liste
+    // -------------------------------------------------------------------------
+
+    public function rest_calendars(): WP_REST_Response {
+        global $wpdb;
+        $rows = $wpdb->get_results(
+            "SELECT id, name, color, short_code FROM {$wpdb->prefix}evg_calendars ORDER BY name",
+            ARRAY_A
+        ) ?: [];
+
+        return new WP_REST_Response(
+            array_map( function( $r ) {
+                return [
+                    'calendar_id' => (string) $r['id'],
+                    'name'        => $r['name'],
+                    'color'       => $r['color'] ?: null,
+                    'short'       => $r['short_code'] ?: null,
+                ];
+            }, $rows ),
+            200
+        );
+    }
+
+    /** Formatiert eine DB-Zeile zu einem App-tauglichen Event-Objekt */
+    private function format_event_row( array $r ): array {
+        $participation_open = false;
+        if ( (int) $r['access_level'] === 1 ) {
+            $now = current_time('mysql');
+            $p_start = $r['participation_start'] ?? '';
+            $p_end   = $r['participation_end']   ?? '';
+            $after_start  = ( $p_start === '' || $now >= $p_start );
+            $before_end   = ( $p_end   === '' || $now <= $p_end   );
+            $participation_open = $after_start && $before_end;
+        }
+
+        $location = null;
+        if ( $r['location_name'] !== '' ) {
+            $location = [
+                'id'     => $r['location_id'] ? (string) $r['location_id'] : null,
+                'name'   => $r['location_name'],
+                'city'   => $r['loc_city']   ?? null,
+                'street' => $r['loc_street'] ?? null,
+                'zip'    => $r['loc_zip']    ?? null,
+            ];
+        }
+
+        $calendar = null;
+        if ( $r['calendar_id'] ) {
+            $calendar = [
+                'id'    => (string) $r['calendar_id'],
+                'name'  => $r['cal_name']  ?? '',
+                'color' => $r['cal_color'] ?: null,
+                'short' => $r['cal_short'] ?: null,
+            ];
+        }
+
+        return [
+            'event_id'           => (string) $r['id'],
+            'name'               => $r['name'],
+            'description'        => $r['description'] ?: null,
+            'start'              => $r['start_dt'],
+            'end'                => $r['end_dt']   ?: null,
+            'all_day'            => (bool)(int) $r['all_day'],
+            'location'           => $location,
+            'calendar'           => $calendar,
+            'is_public'          => (bool)(int) $r['is_public'],
+            'canceled'           => (bool)(int) $r['canceled'],
+            'max_participants'   => isset($r['max_participants']) && $r['max_participants'] !== null
+                                    ? (int) $r['max_participants'] : null,
+            'participation_open' => $participation_open,
+        ];
     }
 
     // -------------------------------------------------------------------------
