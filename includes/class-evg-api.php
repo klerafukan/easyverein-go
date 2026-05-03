@@ -646,16 +646,42 @@ HTML;
         $is_uebungsleiter = current_user_can('manage_options')
             || (bool)(int) get_user_meta( $user_id, 'evg_is_uebungsleiter', true );
 
+        $can_approve = current_user_can('manage_options')
+            || (bool)(int) get_user_meta( $user_id, 'evg_can_approve_hours', true );
+
+        // Anzahl ausstehender Genehmigungen für diese Person
+        $pending_approvals_count = 0;
+        if ( $can_approve ) {
+            global $wpdb;
+            $th_table  = $wpdb->prefix . 'tv_evg_training_hours';
+            $allow_all_g = (bool) $allow_all;
+            if ( current_user_can('manage_options') || $allow_all_g ) {
+                $pending_approvals_count = (int) $wpdb->get_var(
+                    "SELECT COUNT(*) FROM {$th_table} WHERE status='pending'"
+                );
+            } elseif ( ! empty( $groups ) ) {
+                $phs = implode( ',', array_fill( 0, count( $groups ), '%s' ) );
+                $pending_approvals_count = (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        "SELECT COUNT(*) FROM {$th_table} WHERE status='pending' AND group_ev_id IN ({$phs})",
+                        ...$groups
+                    )
+                );
+            }
+        }
+
         return new WP_REST_Response( [
-            'wp_user_id'         => $user_id,
-            'display_name'       => $user->display_name,
-            'email'              => $user->user_email,
-            'ev_sub'             => $ev_sub,
-            'allow_all_groups'   => (bool) $allow_all,
-            'allowed_group_ids'  => $allow_all ? [] : $groups,
-            'can_submit_changes' => true,
-            'can_direct_write'   => $direct_write,
-            'is_uebungsleiter'   => $is_uebungsleiter,
+            'wp_user_id'               => $user_id,
+            'display_name'             => $user->display_name,
+            'email'                    => $user->user_email,
+            'ev_sub'                   => $ev_sub,
+            'allow_all_groups'         => (bool) $allow_all,
+            'allowed_group_ids'        => $allow_all ? [] : $groups,
+            'can_submit_changes'       => true,
+            'can_direct_write'         => $direct_write,
+            'is_uebungsleiter'         => $is_uebungsleiter,
+            'can_approve_hours'        => $can_approve,
+            'pending_approvals_count'  => $pending_approvals_count,
         ], 200 );
     }
 

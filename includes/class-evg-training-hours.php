@@ -118,6 +118,33 @@ class EVG_Training_Hours {
             'callback'            => [$this, 'rest_get_groups'],
             'permission_callback' => $is_uebungsleiter,
         ]);
+
+        $is_approver = function() {
+            return is_user_logged_in() && $this->current_user_can_approve();
+        };
+
+        register_rest_route('easyverein-go/v1', '/training-hours/approvals', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [$this, 'rest_get_approvals'],
+            'permission_callback' => $is_approver,
+            'args' => [
+                'status'      => ['required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+                'month'       => ['required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+                'group_ev_id' => ['required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+                'member_name' => ['required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+            ],
+        ]);
+
+        register_rest_route('easyverein-go/v1', '/training-hours/bulk-action', [
+            'methods'             => WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'rest_bulk_action'],
+            'permission_callback' => $is_approver,
+            'args' => [
+                'action'     => ['required' => true,  'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+                'ids'        => ['required' => true,  'type' => 'array',  'items' => ['type' => 'integer']],
+                'admin_note' => ['required' => false, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
+            ],
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -180,8 +207,8 @@ class EVG_Training_Hours {
         if (!$dt || $dt->format('Y-m-d') !== $date_raw) {
             return new WP_Error('invalid_date', 'Ungültiges Datum (YYYY-MM-DD erwartet)', ['status' => 400]);
         }
-        // Nicht in der Zukunft
-        if ($dt > new DateTime('today')) {
+        // Nicht in der Zukunft – Vergleich in WP-Timezone (nicht PHP/UTC)
+        if ($date_raw > current_time('Y-m-d')) {
             return new WP_Error('future_date', 'Datum darf nicht in der Zukunft liegen', ['status' => 400]);
         }
 
@@ -557,15 +584,23 @@ class EVG_Training_Hours {
 
     public function user_profile_field($user) {
         if (!current_user_can('manage_options')) return;
-        $val = (int)get_user_meta($user->ID, 'evg_is_uebungsleiter', true);
+        $is_ueb     = (int)get_user_meta($user->ID, 'evg_is_uebungsleiter',  true);
+        $can_approve = (int)get_user_meta($user->ID, 'evg_can_approve_hours', true);
         ?>
         <h3>Easyverein Go – Übungsleiter</h3>
         <table class="form-table">
             <tr>
                 <th><label for="evg_is_uebungsleiter">Ist Übungsleiter</label></th>
                 <td>
-                    <input type="checkbox" name="evg_is_uebungsleiter" id="evg_is_uebungsleiter" value="1" <?= checked(1, $val, false) ?>>
+                    <input type="checkbox" name="evg_is_uebungsleiter" id="evg_is_uebungsleiter" value="1" <?= checked(1, $is_ueb, false) ?>>
                     <span class="description">Darf Trainingszeiten erfassen und freigeben lassen</span>
+                </td>
+            </tr>
+            <tr>
+                <th><label for="evg_can_approve_hours">Darf erfasste Zeiten genehmigen</label></th>
+                <td>
+                    <input type="checkbox" name="evg_can_approve_hours" id="evg_can_approve_hours" value="1" <?= checked(1, $can_approve, false) ?>>
+                    <span class="description">Sieht und genehmigt Stundeneinträge der eigenen Gruppen in der App</span>
                 </td>
             </tr>
         </table>
@@ -574,10 +609,8 @@ class EVG_Training_Hours {
 
     public function save_user_profile_field($user_id) {
         if (!current_user_can('manage_options')) return;
-        if (!isset($_POST['evg_is_uebungsleiter_nonce'])) {
-            // kein dedizierter Nonce – WP-Edit-User-Nonce ist bereits geprüft
-        }
-        update_user_meta($user_id, 'evg_is_uebungsleiter', isset($_POST['evg_is_uebungsleiter']) ? 1 : 0);
+        update_user_meta($user_id, 'evg_is_uebungsleiter',  isset($_POST['evg_is_uebungsleiter'])  ? 1 : 0);
+        update_user_meta($user_id, 'evg_can_approve_hours', isset($_POST['evg_can_approve_hours']) ? 1 : 0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -589,6 +622,149 @@ class EVG_Training_Hours {
         if (!$uid) return false;
         if (current_user_can('manage_options')) return true;
         return (bool)(int)get_user_meta($uid, 'evg_is_uebungsleiter', true);
+    }
+
+    private function current_user_can_approve(): bool {
+        $uid = get_current_user_id();
+        if (!$uid) return false;
+        if (current_user_can('manage_options')) return true;
+        return (bool)(int)get_user_meta($uid, 'evg_can_approve_hours', true);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // REST: Genehmigungsansicht
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function rest_get_approvals( WP_REST_Request $req ) {
+        global $wpdb;
+        $user_id   = get_current_user_id();
+        $is_admin  = current_user_can('manage_options');
+        $allow_all = (bool)(int)get_user_meta($user_id, 'evg_groups_all', true);
+        $allowed   = array_values(array_filter(array_map('strval', (array)get_user_meta($user_id, 'evg_groups', true))));
+
+        $where_parts = [];
+        $params      = [];
+
+        // Gruppen-Sichtbarkeit
+        if (!$is_admin && !$allow_all) {
+            if (empty($allowed)) {
+                return new WP_REST_Response(['items' => [], 'total_hours' => 0.0, 'groups' => []], 200);
+            }
+            $phs         = implode(',', array_fill(0, count($allowed), '%s'));
+            $where_parts[] = "group_ev_id IN ($phs)";
+            $params        = array_merge($params, $allowed);
+        }
+
+        // Filter: Status
+        $status = $req->get_param('status');
+        if ($status && in_array($status, ['pending', 'approved', 'paid', 'rejected'], true)) {
+            $where_parts[] = 'status = %s';
+            $params[]      = $status;
+        }
+
+        // Filter: Monat
+        $month = $req->get_param('month');
+        if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
+            [$y, $m]       = explode('-', $month);
+            $where_parts[] = 'YEAR(training_date) = %d AND MONTH(training_date) = %d';
+            $params[]      = (int)$y;
+            $params[]      = (int)$m;
+        }
+
+        // Filter: Gruppe
+        $group_ev_id = $req->get_param('group_ev_id');
+        if ($group_ev_id) {
+            $where_parts[] = 'group_ev_id = %s';
+            $params[]      = $group_ev_id;
+        }
+
+        // Filter: Übungsleiter (Name)
+        $member_name = $req->get_param('member_name');
+        if ($member_name) {
+            $where_parts[] = 'member_name LIKE %s';
+            $params[]      = '%' . $wpdb->esc_like($member_name) . '%';
+        }
+
+        $where_sql = $where_parts ? 'WHERE ' . implode(' AND ', $where_parts) : '';
+        $sql       = "SELECT * FROM {$this->table()} {$where_sql} ORDER BY training_date DESC, id DESC";
+        $rows      = $params
+            ? $wpdb->get_results($wpdb->prepare($sql, ...$params), ARRAY_A)
+            : $wpdb->get_results($sql, ARRAY_A);
+        $rows = $rows ?: [];
+
+        $total_hours = 0.0;
+        $group_map   = [];
+        $items = array_map(function($r) use (&$total_hours, &$group_map) {
+            $total_hours += (float)$r['hours'];
+            $group_map[$r['group_ev_id']] = $r['group_name'];
+            return [
+                'id'            => (int)$r['id'],
+                'wp_user_id'    => (int)$r['wp_user_id'],
+                'member_name'   => $r['member_name'],
+                'group_ev_id'   => $r['group_ev_id'],
+                'group_name'    => $r['group_name'],
+                'training_date' => $r['training_date'],
+                'hours'         => (float)$r['hours'],
+                'note'          => $r['note'],
+                'status'        => $r['status'],
+                'admin_note'    => $r['admin_note'],
+                'created_at'    => $r['created_at'],
+                'approved_at'   => $r['approved_at'] ?? null,
+            ];
+        }, $rows);
+
+        $groups = array_values(array_map(
+            fn($ev_id) => ['group_ev_id' => $ev_id, 'label' => $group_map[$ev_id]],
+            array_keys($group_map)
+        ));
+        usort($groups, fn($a, $b) => strcmp($a['label'], $b['label']));
+
+        return new WP_REST_Response([
+            'items'       => $items,
+            'total_hours' => round($total_hours, 1),
+            'groups'      => $groups,
+        ], 200);
+    }
+
+    public function rest_bulk_action( WP_REST_Request $req ) {
+        global $wpdb;
+        $action     = sanitize_text_field($req->get_param('action'));
+        $ids        = array_filter(array_map('absint', (array)$req->get_param('ids')));
+        $admin_note = sanitize_text_field($req->get_param('admin_note') ?? '');
+        $now        = current_time('mysql');
+        $approver   = get_current_user_id();
+
+        if (empty($ids)) {
+            return new WP_Error('no_ids', 'Keine IDs angegeben', ['status' => 400]);
+        }
+        if (!in_array($action, ['approve', 'reject', 'pay'], true)) {
+            return new WP_Error('invalid_action', 'Ungültige Aktion', ['status' => 400]);
+        }
+        if ($action === 'reject' && !$admin_note) {
+            return new WP_Error('note_required', 'Ablehnungsgrund ist erforderlich', ['status' => 400]);
+        }
+
+        $table = $this->table();
+        $phs   = implode(',', array_fill(0, count($ids), '%d'));
+
+        if ($action === 'approve') {
+            $updated = $wpdb->query($wpdb->prepare(
+                "UPDATE {$table} SET status='approved', approved_by=%d, approved_at=%s, updated_at=%s WHERE id IN ({$phs}) AND status='pending'",
+                array_merge([$approver, $now, $now], array_values($ids))
+            ));
+        } elseif ($action === 'reject') {
+            $updated = $wpdb->query($wpdb->prepare(
+                "UPDATE {$table} SET status='rejected', admin_note=%s, approved_by=%d, approved_at=%s, updated_at=%s WHERE id IN ({$phs}) AND status='pending'",
+                array_merge([$admin_note, $approver, $now, $now], array_values($ids))
+            ));
+        } else { // pay
+            $updated = $wpdb->query($wpdb->prepare(
+                "UPDATE {$table} SET status='paid', paid_at=%s, updated_at=%s WHERE id IN ({$phs}) AND status='approved'",
+                array_merge([$now, $now], array_values($ids))
+            ));
+        }
+
+        return new WP_REST_Response(['updated' => (int)$updated], 200);
     }
 
     private function status_label(string $status): string {
