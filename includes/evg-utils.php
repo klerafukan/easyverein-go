@@ -249,8 +249,10 @@ function evg_http_get($url,$headers=[],$args=[]){
             }
             evg_debug_log_api($ctx);
             // Automatische Token-Erneuerung wenn die API es signalisiert
-            $token_refresh_needed = wp_remote_retrieve_header($resp,'tokenRefreshNeeded');
-            if ($token_refresh_needed === 'true' || $token_refresh_needed === '1') {
+            // v3.0 sendet token_refresh_needed, ältere Versionen tokenRefreshNeeded
+            $token_refresh_needed = wp_remote_retrieve_header($resp,'token_refresh_needed')
+                ?: wp_remote_retrieve_header($resp,'tokenRefreshNeeded');
+            if (in_array(strtolower((string)$token_refresh_needed), ['true','1'], true)) {
                 evg_maybe_refresh_token_once();
                 // Request-Header für eventuell folgende Retries aktualisieren
                 $new_key = (string) get_option('evg_api_key','');

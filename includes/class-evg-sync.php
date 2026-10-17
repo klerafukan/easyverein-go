@@ -239,6 +239,33 @@ class EVG_Sync {
         ];
     }
 
+    /**
+     * v3.0 liefert selected_options nur als Referenzen (…/select-option/{id}).
+     * Löst sie in ihre Anzeigewerte auf; Ergebnisse werden im Sync-State gecacht,
+     * damit jede Option pro Lauf nur einmal abgefragt wird.
+     */
+    private function resolve_select_options(array $refs, array &$s, &$calls){
+        $labels = [];
+        foreach ($refs as $ref){
+            if (is_array($ref) && isset($ref['value'])){ $labels[] = (string)$ref['value']; continue; }
+            if (!is_scalar($ref)) continue;
+            $ref = (string)$ref;
+            if (!preg_match('~/select-option/([0-9]+)~',$ref,$mm) && !preg_match('~^([0-9]+)$~',$ref,$mm)){ $labels[] = $ref; continue; }
+            $oid = $mm[1];
+            if (!isset($s['select_option_labels'][$oid])){
+                $label = $oid;
+                $resp  = evg_http_get($this->base().'/api/v3.0/select-option/'.$oid,$this->headers()); $calls++; $this->rate_sleep();
+                if (!is_wp_error($resp) && ($c=wp_remote_retrieve_response_code($resp))>=200 && $c<300){
+                    $opt = json_decode(wp_remote_retrieve_body($resp),true);
+                    if (is_array($opt) && isset($opt['value']) && $opt['value'] !== '') $label = (string)$opt['value'];
+                }
+                $s['select_option_labels'][$oid] = $label;
+            }
+            $labels[] = $s['select_option_labels'][$oid];
+        }
+        return $labels;
+    }
+
     private function headers(){
         $key=get_option('evg_api_key',''); $hdr=get_option('evg_auth_header','Authorization Bearer');
         $h=['Accept'=>'application/json']; if($hdr==='Authorization Bearer') $h['Authorization']='Bearer '.$key; else $h['X-API-Key']=$key; return $h;
@@ -297,6 +324,7 @@ class EVG_Sync {
             'member_index'            => 0,
             'custom_field_types'      => [],
             'custom_field_labels'     => [],
+            'select_option_labels'    => [],
             'custom_field_values_seen'=> [],
             'cap'  => max(0,(int)$cap),
             'done' => false
@@ -500,7 +528,7 @@ class EVG_Sync {
                     $mid = $m['id'] ?? $m['memberId'] ?? $m['uuid'] ?? null;
                     if (!$mid) continue;
                     $mid = (string)$mid;
-                    $mno = $m['memberNumber'] ?? $m['membershipNumber'] ?? $m['number'] ?? '';
+                    $mno = $m['membership_number'] ?? $m['memberNumber'] ?? $m['membershipNumber'] ?? $m['number'] ?? '';
                     $cd  = '';
                     if (!empty($m['contactDetails']) && is_string($m['contactDetails']))          $cd = $m['contactDetails'];
                     elseif (!empty($m['contact_details']) && is_string($m['contact_details']))    $cd = $m['contact_details'];
@@ -631,6 +659,9 @@ class EVG_Sync {
                     elseif (array_key_exists('valueText',$entry)) $value_source = $entry['valueText'];
                     elseif (array_key_exists('value_text',$entry)) $value_source = $entry['value_text'];
                     if (($value_source === null||$value_source===''||$value_source===[]) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])) $value_source=$entry['selectOptions'];
+                    if (($value_source === null||$value_source===''||$value_source===[]) && !empty($entry['selected_options']) && is_array($entry['selected_options'])){
+                        $value_source = $this->resolve_select_options($entry['selected_options'],$s,$calls);
+                    }
                     $prepared = $this->prepare_custom_field_value($field_id,$value_source);
                     if (!$prepared) continue;
                     // field_label
