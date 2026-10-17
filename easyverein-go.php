@@ -26,6 +26,7 @@ require_once EVG_PATH.'includes/class-evg-training-hours.php';
 class EVG_Plugin {
     private const CRON_HOOK        = 'evg_nightly_sync';
     private const EVENTS_CRON_HOOK = 'evg_events_sync';
+    private const TOKEN_CRON_HOOK  = 'evg_token_refresh';
     private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
     private static $instance = null;
@@ -38,6 +39,9 @@ class EVG_Plugin {
         new EVG_Training_Hours();
         add_action(self::CRON_HOOK,[$this,'run_nightly_sync']);
         add_action(self::EVENTS_CRON_HOOK,[$this,'run_events_sync_cron']);
+        add_action(self::TOKEN_CRON_HOOK,'evg_cron_token_refresh');
+        add_action('add_option_evg_api_key','evg_mark_api_key_refreshed');
+        add_action('update_option_evg_api_key','evg_mark_api_key_refreshed');
         add_action('update_option_evg_nightly_sync_enabled',[$this,'handle_nightly_toggle'],10,3);
     }
     public function on_activate(){
@@ -488,6 +492,7 @@ class EVG_Plugin {
     private function clear_cron(){
         wp_clear_scheduled_hook(self::CRON_HOOK);
         wp_clear_scheduled_hook(self::EVENTS_CRON_HOOK);
+        wp_clear_scheduled_hook(self::TOKEN_CRON_HOOK);
     }
     public function maybe_schedule_cron(){
         if(get_option('evg_nightly_sync_enabled',0)){
@@ -496,6 +501,9 @@ class EVG_Plugin {
             wp_clear_scheduled_hook(self::CRON_HOOK);
         }
         $this->schedule_events_cron();
+        if(!wp_next_scheduled(self::TOKEN_CRON_HOOK)){
+            wp_schedule_event(time() + HOUR_IN_SECONDS,'daily',self::TOKEN_CRON_HOOK);
+        }
     }
     public function handle_nightly_toggle($old_value,$value,$option){
         if((int)$value){

@@ -162,7 +162,7 @@ function evg_refresh_api_token(){
 
     $data = json_decode($body, true);
     $new_token = null;
-    foreach (['token', 'key', 'api_key', 'apiKey', 'access_token', 'accessToken'] as $field) {
+    foreach (['Bearer', 'token', 'key', 'api_key', 'apiKey', 'access_token', 'accessToken'] as $field) {
         if (!empty($data[$field]) && is_string($data[$field])) {
             $new_token = $data[$field];
             break;
@@ -193,6 +193,27 @@ function evg_api_token_age_days(){
         return null;
     }
     return (int) floor((time() - $refreshed_at) / DAY_IN_SECONDS);
+}
+
+/**
+ * Täglicher Cron: erneuert den API-Token proaktiv, sobald er ≥ 15 Tage alt
+ * (oder sein Alter unbekannt) ist. easyVerein-Tokens laufen nach 30 Tagen ab
+ * und lassen sich danach nicht mehr per refresh-token erneuern.
+ */
+function evg_cron_token_refresh(){
+    if ((string) get_option('evg_api_key','') === '') {
+        return;
+    }
+    $age = evg_api_token_age_days();
+    if ($age !== null && $age < 15) {
+        return;
+    }
+    evg_maybe_refresh_token_once();
+}
+
+/** Neuer Key gespeichert → Token-Alter ab jetzt zählen. */
+function evg_mark_api_key_refreshed(){
+    update_option('evg_api_key_refreshed_at', time());
 }
 
 function evg_http_get($url,$headers=[],$args=[]){
