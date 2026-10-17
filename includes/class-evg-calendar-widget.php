@@ -10,7 +10,7 @@
  *
  * Attribute:
  *   calendars   – kommagetrennte Kalender-IDs (Standard: alle)
- *   public_only – 1 (Standard) | 0  → auch nicht-öffentliche anzeigen
+ *   public_only – 1 (Standard) | 0  → auch nicht-öffentliche anzeigen (nur für eingeloggte Nutzer)
  *   title       – optionaler Überschriften-Text über dem Kalender
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -95,7 +95,11 @@ class EVG_Calendar_Widget {
         $cal_ids_raw = isset( $_POST['calendars'] ) ? sanitize_text_field( wp_unslash( $_POST['calendars'] ) ) : '';
         $cal_ids     = array_values( array_filter( array_map( 'intval', explode( ',', $cal_ids_raw ) ) ) );
 
+        // Nicht-öffentliche Termine nur für eingeloggte Nutzer – der Request-Parameter allein genügt nicht
         $public_only = isset( $_POST['publicOnly'] ) ? (int) $_POST['publicOnly'] : 1;
+        if ( ! is_user_logged_in() ) {
+            $public_only = 1;
+        }
         $public_sql  = $public_only ? ' AND e.is_public = 1' : '';
 
         $cal_filter_sql = '';

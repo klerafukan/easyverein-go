@@ -139,62 +139,7 @@ class EVG_Api {
      * Legt ihn bei Bedarf automatisch an (Auto-Provisioning).
      */
     private function find_or_provision_user( $sub, array $userinfo ) {
-        // Bestehende Zuordnung suchen
-        $users = get_users( [
-            'meta_key'   => 'evg_oidc_sub',
-            'meta_value' => $sub,
-            'number'     => 1,
-            'fields'     => 'ids',
-        ] );
-        if ( ! empty( $users ) ) {
-            return (int) $users[0];
-        }
-
-        // E-Mail aus userinfo
-        $email = isset( $userinfo['email'] ) ? sanitize_email( $userinfo['email'] ) : '';
-        $name  = isset( $userinfo['name'] )  ? sanitize_text_field( $userinfo['name'] ) : $sub;
-        $parts = explode( ' ', $name, 2 );
-        $first = sanitize_text_field( $parts[0] ?? '' );
-        $last  = sanitize_text_field( $parts[1] ?? '' );
-
-        // Prüfen ob E-Mail bereits existiert → dann nur sub hinzufügen
-        if ( $email ) {
-            $existing = get_user_by( 'email', $email );
-            if ( $existing ) {
-                update_user_meta( $existing->ID, 'evg_oidc_sub', $sub );
-                return $existing->ID;
-            }
-        }
-
-        // Benutzername: E-Mail bevorzugen, sonst sicherer Fallback
-        $username = $email ?: 'ev_' . sanitize_user( preg_replace( '/[^a-z0-9]/i', '', $sub ), true );
-
-        // WP-User anlegen
-        $user_id = wp_insert_user( [
-            'user_login'   => $username,
-            'user_email'   => $email,
-            'user_pass'    => wp_generate_password( 32, true, true ),
-            'first_name'   => $first,
-            'last_name'    => $last,
-            'display_name' => $name,
-            'role'         => 'subscriber',
-        ] );
-
-        if ( is_wp_error( $user_id ) ) {
-            evg_debug_log_api( [
-                'url'    => 'provision_user',
-                'method' => 'INTERNAL',
-                'status' => 'ERR',
-                'note'   => 'auto-provision failed: ' . $user_id->get_error_message(),
-            ] );
-            return null;
-        }
-
-        update_user_meta( $user_id, 'evg_oidc_sub', $sub );
-        // Admin muss Gruppen manuell zuweisen – neuer User sieht standardmäßig nichts
-        update_user_meta( $user_id, 'evg_groups_all', 0 );
-
-        return $user_id;
+        return evg_find_or_provision_oidc_user( $sub, $userinfo );
     }
 
     // -------------------------------------------------------------------------
@@ -516,7 +461,8 @@ HTML;
 
         $user_id    = get_current_user_id();
         $allow_all  = (bool) get_user_meta( $user_id, 'evg_groups_all', true );
-        $allowed    = (array) get_user_meta( $user_id, 'evg_groups', true );
+        $allowed    = get_user_meta( $user_id, 'evg_groups', true );
+        $allowed    = array_values( array_filter( array_map( 'strval', is_array( $allowed ) ? $allowed : [] ) ) );
         $per_page   = (int) $request->get_param( 'per_page' );
         $offset     = (int) $request->get_param( 'offset' );
         $mod_after  = sanitize_text_field( $request->get_param( 'modified_after' ) ?? '' );

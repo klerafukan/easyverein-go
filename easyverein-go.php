@@ -56,7 +56,7 @@ class EVG_Plugin {
             'evg_custom_fields_path'   => '/api/v3.0/custom-field',
             'evg_member_custom_fields_path' => '/api/v3.0/member-custom-field-assignment?user_object={id}',
             'evg_columns'      => ['first_name','family_name','email_private','date_of_birth','age','birth_year','gender','phone','zip','city','street','groups'],
-            'evg_debug'        => 1,
+            'evg_debug'        => 0,
             'evg_sync_next_pages_max' => 100,
             'evg_sync_rate_per_sec'   => 5,
             'evg_sync_calls_per_tick' => 5,
@@ -675,7 +675,7 @@ class EVG_Plugin {
         $this->ensure_tables_for_prefix($nightly_prefix);
         $sync=new EVG_Sync($nightly_prefix);
 
-        $log_dir  = WP_CONTENT_DIR.'/easyverein-debug';
+        $log_dir  = evg_debug_dir();
         $log_file = $log_dir.'/nightly-'.date('Ymd-His').'.log';
 
         // Stuck-State-Erkennung: verhindert dauerhaftes Blockieren bei Fehlern

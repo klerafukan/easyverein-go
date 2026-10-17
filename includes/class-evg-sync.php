@@ -572,12 +572,6 @@ class EVG_Sync {
                     $raw_body = wp_remote_retrieve_body($resp);
                     $d = json_decode($raw_body,true);
                     // Log first successful contact-details response to debug dir for field-name inspection
-                    if (is_array($d) && empty($s['cd_sample_logged'])){
-                        $s['cd_sample_logged'] = true;
-                        $dir = trailingslashit(WP_CONTENT_DIR).'easyverein-debug';
-                        if (!is_dir($dir)) wp_mkdir_p($dir);
-                        @file_put_contents($dir.'/cd-sample-'.gmdate('Ymd-His').'.json', wp_json_encode($d, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
-                    }
                     if (is_array($d)){
                         $now = current_time('mysql',1);
                         $first  = $d['first_name']  ?? $d['firstName']  ?? '';

@@ -488,59 +488,7 @@ class EVG_Oidc {
 
     /** WP-User aus evg_oidc_sub oder E-Mail suchen, ggf. auto-provision */
     private function find_or_provision_user( $sub, array $userinfo ) {
-        // 1. Suche per sub (schnellster Pfad)
-        $users = get_users( [
-            'meta_key'   => 'evg_oidc_sub',
-            'meta_value' => $sub,
-            'number'     => 1,
-            'fields'     => 'ids',
-        ] );
-        if ( ! empty( $users ) ) {
-            return (int) $users[0];
-        }
-
-        // 2. Suche per E-Mail (Bulk-Sync hat User bereits angelegt)
-        $email = sanitize_email( $userinfo['email'] ?? '' );
-        if ( $email ) {
-            $existing = get_user_by( 'email', $email );
-            if ( $existing ) {
-                update_user_meta( $existing->ID, 'evg_oidc_sub', $sub );
-                // evg_member_id aus userinfo nachführen falls vorhanden
-                $member_id = sanitize_text_field( $userinfo['member_id'] ?? $userinfo['sub'] ?? '' );
-                if ( $member_id ) {
-                    update_user_meta( $existing->ID, 'evg_member_id', $member_id );
-                }
-                return $existing->ID;
-            }
-        }
-
-        // 3. Neuen User anlegen (Fall: kein Bulk-Sync durchgeführt)
-        $name  = sanitize_text_field( $userinfo['name']  ?? '' );
-        $parts = explode( ' ', $name, 2 );
-        $first = sanitize_text_field( $parts[0] ?? '' );
-        $last  = sanitize_text_field( $parts[1] ?? '' );
-        $username = $email ?: 'ev_' . sanitize_user( preg_replace( '/[^a-z0-9]/i', '', $sub ), true );
-
-        $user_id = wp_insert_user( [
-            'user_login'   => $username,
-            'user_email'   => $email,
-            'user_pass'    => wp_generate_password( 32, true, true ),
-            'first_name'   => $first,
-            'last_name'    => $last,
-            'display_name' => $name ?: $email,
-            'role'         => 'subscriber',
-        ] );
-
-        if ( is_wp_error( $user_id ) ) {
-            error_log( '[EVG OIDC] Auto-Provision fehlgeschlagen für sub=' . $sub . ': ' . $user_id->get_error_message() );
-            return null;
-        }
-
-        update_user_meta( $user_id, 'evg_oidc_sub', $sub );
-        update_user_meta( $user_id, 'evg_groups_all', 0 );
-
-        error_log( '[EVG OIDC] Neuer WP-User angelegt: ID=' . $user_id . ' sub=' . $sub );
-        return (int) $user_id;
+        return evg_find_or_provision_oidc_user( $sub, $userinfo );
     }
 
     /** Callback-URL für OIDC (muss in EasyVerein als Redirect URI hinterlegt sein) */

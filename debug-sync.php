@@ -52,7 +52,7 @@ foreach ($table_prefixes as $label => $prefix) {
 echo "<h2>2. Current Sync State</h2>";
 $state_primary = get_option('evg_sync_job');
 if ($state_primary) {
-    echo "<h3>Primär (evg)</h3><pre>" . print_r($state_primary, true) . "</pre>";
+    echo "<h3>Primär (evg)</h3><pre>" . esc_html(print_r($state_primary, true)) . "</pre>";
 } else {
     echo "<h3>Primär (evg)</h3><p>No active sync job</p>";
 }
@@ -60,7 +60,7 @@ if ($nightly_prefix !== 'evg') {
     $nightly_state_key = 'evg_sync_job_' . $nightly_prefix;
     $state_nightly = get_option($nightly_state_key);
     if ($state_nightly) {
-        echo "<h3>Nächtlich ($nightly_prefix)</h3><pre>" . print_r($state_nightly, true) . "</pre>";
+        echo "<h3>Nächtlich (" . esc_html($nightly_prefix) . ")</h3><pre>" . esc_html(print_r($state_nightly, true)) . "</pre>";
     } else {
         echo "<h3>Nächtlich ($nightly_prefix)</h3><p>No active sync job</p>";
     }
@@ -83,7 +83,7 @@ foreach ($config as $key => $value) {
     if (strpos($key, 'key') !== false) {
         $value = $value ? '***' . substr($value, -4) : 'Not set';
     }
-    echo "<p><strong>$key:</strong> $value</p>";
+    echo "<p><strong>" . esc_html($key) . ":</strong> " . esc_html($value) . "</p>";
 }
 
 // Test API connection
@@ -107,21 +107,25 @@ if (class_exists('EVG_Sync')) {
     }
     $headers['Accept'] = 'application/json';
     
-    echo "<p><strong>Testing URL:</strong> $url</p>";
-    echo "<p><strong>Headers:</strong> " . print_r($headers, true) . "</p>";
+    echo "<p><strong>Testing URL:</strong> " . esc_html($url) . "</p>";
+    $masked_headers = $headers;
+    foreach ($masked_headers as $hk => $hv) {
+        if (stripos($hk, 'authorization') !== false || stripos($hk, 'x-api-key') !== false) $masked_headers[$hk] = 'XXXXX';
+    }
+    echo "<p><strong>Headers:</strong> " . esc_html(print_r($masked_headers, true)) . "</p>";
     
     if (function_exists('evg_http_get')) {
         $response = evg_http_get($url, $headers);
         
         if (is_wp_error($response)) {
-            echo "<p style='color: red;'><strong>Error:</strong> " . $response->get_error_message() . "</p>";
+            echo "<p style='color: red;'><strong>Error:</strong> " . esc_html($response->get_error_message()) . "</p>";
         } else {
             $code = wp_remote_retrieve_response_code($response);
             $body = wp_remote_retrieve_body($response);
             
             echo "<p><strong>Response Code:</strong> $code</p>";
             echo "<p><strong>Response Body (first 500 chars):</strong></p>";
-            echo "<pre>" . substr($body, 0, 500) . "...</pre>";
+            echo "<pre>" . esc_html(substr($body, 0, 500)) . "...</pre>";
             
             if ($code === 200) {
                 $data = json_decode($body, true);
@@ -154,8 +158,8 @@ if (is_dir($debug_dir)) {
         foreach ($recent_files as $file) {
             $content = file_get_contents($file);
             $data = json_decode($content, true);
-            echo "<h3>" . basename($file) . "</h3>";
-            echo "<pre>" . print_r($data, true) . "</pre>";
+            echo "<h3>" . esc_html(basename($file)) . "</h3>";
+            echo "<pre>" . esc_html(print_r($data, true)) . "</pre>";
         }
     } else {
         echo "<p>No debug files found</p>";

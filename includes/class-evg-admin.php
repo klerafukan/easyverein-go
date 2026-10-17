@@ -39,7 +39,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_member_groups_path');
         register_setting('evg_settings','evg_custom_fields_path');
         register_setting('evg_settings','evg_member_custom_fields_path');
-        register_setting('evg_settings','evg_debug',['type'=>'boolean','sanitize_callback'=>'absint','default'=>1]);
+        register_setting('evg_settings','evg_debug',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         register_setting('evg_settings','evg_sync_next_pages_max',['type'=>'integer','sanitize_callback'=>'absint','default'=>100]);
         register_setting('evg_settings','evg_sync_rate_per_sec',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
         register_setting('evg_settings','evg_sync_calls_per_tick',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
@@ -104,7 +104,7 @@ class EVG_Admin {
                         <th>Debug</th>
                         <td>
                             <label>
-                                <input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',1)); ?>>
+                                <input type="checkbox" name="evg_debug" value="1" <?php checked(1,(int)get_option('evg_debug',0)); ?>>
                                 <?php esc_html_e('aktivieren (API-Aufrufe protokollieren)','ev-groups'); ?>
                             </label>
                             <p class="description">

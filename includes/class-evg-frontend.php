@@ -121,7 +121,14 @@ class EVG_Frontend {
             $selected_group_ids = [];
         }
         $selected_group_ids = array_values(array_filter(array_map('strval', $selected_group_ids)));
-        $restrict_groups = !$allow_all_groups && !empty($selected_group_ids);
+        if (current_user_can('manage_options')) {
+            $allow_all_groups = 1;
+        }
+        // Ohne freigegebene Gruppen sieht ein Nutzer keine Mitglieder
+        if (!$allow_all_groups && empty($selected_group_ids)) {
+            wp_send_json_success(array('rows' => array(), 'groups' => array(), 'custom_filters' => array()));
+        }
+        $restrict_groups = !$allow_all_groups;
 
         $custom_allow_all = (int) get_user_meta($user_id, 'evg_custom_filters_all', true);
         $custom_selected_tokens = get_user_meta($user_id, 'evg_custom_filters', true);

@@ -642,8 +642,9 @@ class EVG_Training_Hours {
         $allow_all = (bool)(int)get_user_meta($user_id, 'evg_groups_all', true);
         $allowed   = array_values(array_filter(array_map('strval', (array)get_user_meta($user_id, 'evg_groups', true))));
 
-        $where_parts = [];
-        $params      = [];
+        // Eigene Stunden erscheinen nicht in der eigenen Genehmigungsliste
+        $where_parts = ['wp_user_id <> %d'];
+        $params      = [$user_id];
 
         // Gruppen-Sichtbarkeit
         if (!$is_admin && !$allow_all) {
@@ -744,8 +745,32 @@ class EVG_Training_Hours {
             return new WP_Error('note_required', 'Ablehnungsgrund ist erforderlich', ['status' => 400]);
         }
 
+        $is_admin = current_user_can('manage_options');
+        // Auszahlung markieren bleibt Administratoren vorbehalten
+        if ($action === 'pay' && !$is_admin) {
+            return new WP_Error('forbidden', 'Nur Administratoren dürfen Auszahlungen markieren', ['status' => 403]);
+        }
+
         $table = $this->table();
-        $phs   = implode(',', array_fill(0, count($ids), '%d'));
+
+        // Nur Einträge bearbeiten, die der Genehmiger sehen darf – nie die eigenen
+        $id_phs = implode(',', array_fill(0, count($ids), '%d'));
+        $filter_sql    = "id IN ({$id_phs}) AND wp_user_id <> %d";
+        $filter_params = array_merge(array_values($ids), [$approver]);
+        if (!$is_admin && !(bool)(int)get_user_meta($approver, 'evg_groups_all', true)) {
+            $allowed = get_user_meta($approver, 'evg_groups', true);
+            $allowed = array_values(array_filter(array_map('strval', is_array($allowed) ? $allowed : [])));
+            if (empty($allowed)) {
+                return new WP_REST_Response(['updated' => 0], 200);
+            }
+            $filter_sql   .= ' AND group_ev_id IN (' . implode(',', array_fill(0, count($allowed), '%s')) . ')';
+            $filter_params = array_merge($filter_params, $allowed);
+        }
+        $ids = array_map('intval', (array)$wpdb->get_col($wpdb->prepare("SELECT id FROM {$table} WHERE {$filter_sql}", ...$filter_params)));
+        if (empty($ids)) {
+            return new WP_REST_Response(['updated' => 0], 200);
+        }
+        $phs = implode(',', array_fill(0, count($ids), '%d'));
 
         if ($action === 'approve') {
             $updated = $wpdb->query($wpdb->prepare(
