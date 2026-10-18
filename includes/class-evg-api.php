@@ -266,7 +266,7 @@ class EVG_Api {
 
         // Defaults: heute bis 12 Monate voraus
         if ( $from === '' ) $from = current_time('Y-m-d') . ' 00:00:00';
-        if ( $to   === '' ) $to   = gmdate('Y-m-d H:i:s', strtotime('+12 months'));
+        if ( $to   === '' ) $to   = wp_date('Y-m-d H:i:s', strtotime('+12 months'));
 
         $where   = 'WHERE e.start_dt >= %s AND e.start_dt <= %s AND e.is_reservation = 0';
         $params  = [ $from, $to ];

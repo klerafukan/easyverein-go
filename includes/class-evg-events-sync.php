@@ -10,7 +10,12 @@
  *   1. Kalender holen → wp_evg_calendars
  *   2. Orte holen     → wp_evg_locations
  *   3. Events holen   → wp_evg_events  (Fenster: 7 Tage zurück bis 12 Monate voraus)
+ *      Termine im Fenster, die die API nicht mehr liefert (gelöscht, nicht mehr
+ *      öffentlich, anderer Kalender), werden entfernt.
  *   4. Veraltete Events bereinigen
+ *
+ * Zeiten werden als Ortszeit der Website (Einstellungen → Allgemein → Zeitzone)
+ * gespeichert – so erwarten es Kalender-Widget und App.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -107,13 +112,15 @@ class EVG_Events_Sync {
 
     private function sync_calendars(): int {
         global $wpdb;
-        $items = $this->fetch_all_pages( '/api/v2.0/calendar?limit=100' );
+        $items = $this->fetch_all_pages( '/api/v3.0/calendar?limit=100' );
         $now   = current_time( 'mysql' );
         $count = 0;
+        $ids   = [];
 
         foreach ( $items as $cal ) {
             $id = (int)( $cal['id'] ?? 0 );
             if ( ! $id ) continue;
+            $ids[] = $id;
 
             $wpdb->replace(
                 $wpdb->prefix . 'evg_calendars',
@@ -128,6 +135,7 @@ class EVG_Events_Sync {
             );
             $count++;
         }
+        $this->delete_missing( 'evg_calendars', $ids );
 
         return $count;
     }
@@ -136,13 +144,15 @@ class EVG_Events_Sync {
 
     private function sync_locations(): int {
         global $wpdb;
-        $items = $this->fetch_all_pages( '/api/v2.0/location?limit=100' );
+        $items = $this->fetch_all_pages( '/api/v3.0/location?limit=100' );
         $now   = current_time( 'mysql' );
         $count = 0;
+        $ids   = [];
 
         foreach ( $items as $loc ) {
             $id = (int)( $loc['id'] ?? 0 );
             if ( ! $id ) continue;
+            $ids[] = $id;
 
             $wpdb->replace(
                 $wpdb->prefix . 'evg_locations',
@@ -152,15 +162,16 @@ class EVG_Events_Sync {
                     'street'        => substr( (string)( $loc['street']       ?? '' ), 0, 500 ),
                     'city'          => substr( (string)( $loc['city']         ?? '' ), 0, 500 ),
                     'zip'           => substr( (string)( $loc['zip']          ?? '' ), 0, 20 ),
-                    'country_code'  => substr( (string)( $loc['countryCode']  ?? $loc['country_code'] ?? '' ), 0, 5 ),
+                    'country_code'  => substr( (string)( $loc['country_code'] ?? $loc['countryCode'] ?? '' ), 0, 5 ),
                     'description'   => (string)( $loc['description'] ?? '' ),
-                    'is_reservable' => (int)( $loc['isReservable']   ?? $loc['is_reservable'] ?? 0 ),
+                    'is_reservable' => (int)( $loc['is_reservable']  ?? $loc['isReservable'] ?? 0 ),
                     'synced_at'     => $now,
                 ],
                 [ '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s' ]
             );
             $count++;
         }
+        $this->delete_missing( 'evg_locations', $ids );
 
         return $count;
     }
@@ -170,17 +181,17 @@ class EVG_Events_Sync {
     private function sync_events(): int {
         global $wpdb;
 
-        // Zeitfenster: 7 Tage zurück bis 12 Monate voraus
-        $from = gmdate( 'Y-m-d\TH:i:s', strtotime( '-7 days' ) );
-        $to   = gmdate( 'Y-m-d\TH:i:s', strtotime( '+12 months' ) );
+        // Zeitfenster: 7 Tage zurück bis 12 Monate voraus (UTC mit „Z“, sonst wertet die API als Ortszeit)
+        $from_ts = strtotime( '-7 days' );
+        $to_ts   = strtotime( '+12 months' );
 
-        $path = '/api/v2.0/event?limit=100&ordering=start'
-              . '&start__gte=' . rawurlencode( $from )
-              . '&start__lte=' . rawurlencode( $to );
+        $path = '/api/v3.0/event?limit=100&ordering=start'
+              . '&start__gte=' . rawurlencode( gmdate( 'Y-m-d\TH:i:s\Z', $from_ts ) )
+              . '&start__lte=' . rawurlencode( gmdate( 'Y-m-d\TH:i:s\Z', $to_ts ) );
 
         // Nur öffentliche Termine, wenn Option gesetzt
         if ( (int) get_option( 'evg_events_public_only', 1 ) ) {
-            $path .= '&isPublic=true';
+            $path .= '&is_public=true';
         }
 
         // Kalender-Filter wenn konfiguriert (kommaseparierte Kalender-IDs)
@@ -197,24 +208,27 @@ class EVG_Events_Sync {
         $calendars = $this->load_calendar_cache();
         $locations = $this->load_location_cache();
 
+        $seen = [];
         foreach ( $items as $ev ) {
             $id = (int)( $ev['id'] ?? 0 );
             if ( ! $id ) continue;
 
             // Datumsfelder normalisieren (EV gibt ISO 8601 zurück)
-            $start_dt = $this->parse_dt( $ev['start'] ?? '' );
-            $end_dt   = $this->parse_dt( $ev['end']   ?? '' );
+            $start_dt = $this->parse_dt( (string)( $ev['start'] ?? '' ) );
+            $end_dt   = $this->parse_dt( (string)( $ev['end']   ?? '' ) );
             if ( ! $start_dt ) continue;
 
             // Location: FK oder Freitext
             $loc_id   = null;
             $loc_name = '';
-            if ( ! empty( $ev['locationObject'] ) ) {
-                $loc_id   = (int) $this->extract_id( $ev['locationObject'] );
+            $loc_ref = $ev['location_object'] ?? $ev['locationObject'] ?? null;
+            if ( ! empty( $loc_ref ) ) {
+                $loc_id   = (int) $this->extract_id( $loc_ref );
                 $loc_name = $locations[ $loc_id ] ?? '';
             }
-            if ( $loc_name === '' && ! empty( $ev['locationName'] ) ) {
-                $loc_name = (string) $ev['locationName'];
+            $loc_text = $ev['location_name'] ?? $ev['locationName'] ?? '';
+            if ( $loc_name === '' && ! empty( $loc_text ) ) {
+                $loc_name = (string) $loc_text;
             }
 
             // Calendar FK
@@ -224,8 +238,8 @@ class EVG_Events_Sync {
             }
 
             // Participation-Zeitraum
-            $part_start = $this->parse_dt( $ev['startParticipation'] ?? '' );
-            $part_end   = $this->parse_dt( $ev['endParticipation']   ?? '' );
+            $part_start = $this->parse_dt( (string)( $ev['start_participation'] ?? $ev['startParticipation'] ?? '' ) );
+            $part_end   = $this->parse_dt( (string)( $ev['end_participation']   ?? $ev['endParticipation']   ?? '' ) );
 
             $wpdb->replace(
                 $wpdb->prefix . 'evg_events',
@@ -235,15 +249,15 @@ class EVG_Events_Sync {
                     'description'         => (string)( $ev['description'] ?? '' ),
                     'start_dt'            => $start_dt,
                     'end_dt'              => $end_dt,
-                    'all_day'             => (int)(bool)( $ev['allDay']         ?? $ev['all_day']        ?? false ),
+                    'all_day'             => (int)(bool)( $ev['all_day']        ?? $ev['allDay']         ?? false ),
                     'location_id'         => $loc_id,
                     'location_name'       => substr( $loc_name, 0, 500 ),
                     'calendar_id'         => $cal_id,
-                    'is_public'           => (int)(bool)( $ev['isPublic']       ?? $ev['is_public']      ?? true ),
+                    'is_public'           => (int)(bool)( $ev['is_public']      ?? $ev['isPublic']       ?? true ),
                     'canceled'            => (int)(bool)( $ev['canceled']       ?? false ),
-                    'is_reservation'      => (int)(bool)( $ev['isReservation']  ?? $ev['is_reservation'] ?? false ),
-                    'min_participants'    => isset( $ev['minParticipators'] )   ? (int) $ev['minParticipators']   : null,
-                    'max_participants'    => isset( $ev['maxParticipators'] )   ? (int) $ev['maxParticipators']   : null,
+                    'is_reservation'      => (int)(bool)( $ev['is_reservation'] ?? $ev['isReservation']  ?? false ),
+                    'min_participants'    => $this->int_or_null( $ev['min_participators'] ?? $ev['minParticipators'] ?? null ),
+                    'max_participants'    => $this->int_or_null( $ev['max_participators'] ?? $ev['maxParticipators'] ?? null ),
                     'participation_start' => $part_start,
                     'participation_end'   => $part_end,
                     'access_level'        => (int)( $ev['access'] ?? 1 ),
@@ -256,16 +270,49 @@ class EVG_Events_Sync {
                     '%d', '%d', '%s', '%s', '%d', '%s', '%s',
                 ]
             );
+            $seen[] = $id;
             $count++;
+        }
+
+        // Termine im Fenster, die die API nicht mehr liefert, entfernen
+        $from_local = wp_date( 'Y-m-d H:i:s', $from_ts );
+        $to_local   = wp_date( 'Y-m-d H:i:s', $to_ts );
+        $table      = $wpdb->prefix . 'evg_events';
+        if ( $seen ) {
+            $ph = implode( ',', array_fill( 0, count( $seen ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->query( $wpdb->prepare(
+                "DELETE FROM {$table} WHERE start_dt BETWEEN %s AND %s AND id NOT IN ($ph)",
+                array_merge( [ $from_local, $to_local ], $seen )
+            ) );
+        } else {
+            // Leere Antwort: nur leeren, wenn lokal ohnehin kaum etwas steht (Schutz vor API-Aussetzern)
+            $local = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE start_dt BETWEEN %s AND %s", $from_local, $to_local ) );
+            if ( $local <= 5 ) {
+                $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE start_dt BETWEEN %s AND %s", $from_local, $to_local ) );
+            }
         }
 
         return $count;
     }
 
-    /** Löscht Events die älter als 7 Tage sind und nicht mehr vom API geliefert werden. */
+    /** Entfernt Kalender/Orte, die die API nicht mehr liefert (nur bei nicht-leerer Liste). */
+    private function delete_missing( string $suffix, array $ids ): void {
+        global $wpdb;
+        if ( ! $ids ) return;
+        $ph = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->prefix}{$suffix} WHERE id NOT IN ($ph)", $ids ) );
+    }
+
+    private function int_or_null( $v ): ?int {
+        return ( $v === null || $v === '' ) ? null : (int) $v;
+    }
+
+    /** Löscht Events die älter als 7 Tage sind. */
     private function cleanup_old_events(): void {
         global $wpdb;
-        $cutoff = gmdate( 'Y-m-d H:i:s', strtotime( '-7 days' ) );
+        $cutoff = wp_date( 'Y-m-d H:i:s', strtotime( '-7 days' ) );
         $wpdb->query( $wpdb->prepare(
             "DELETE FROM {$wpdb->prefix}evg_events WHERE start_dt < %s",
             $cutoff
@@ -297,7 +344,7 @@ class EVG_Events_Sync {
             $body    = wp_remote_retrieve_body( $resp );
             $payload = json_decode( $body, true ) ?? [];
 
-            // EasyVerein v2.0 paginated: { count, next, results: [...] }
+            // EasyVerein paginated: { next, previous, results: [...] }
             $page_items = [];
             if ( isset( $payload['results'] ) && is_array( $payload['results'] ) ) {
                 $page_items = $payload['results'];
@@ -354,13 +401,16 @@ class EVG_Events_Sync {
         return null;
     }
 
-    /** ISO-8601 → MySQL DATETIME. Gibt null zurück wenn leer/ungültig. */
+    /** ISO-8601 → MySQL DATETIME in Ortszeit der Website. Gibt null zurück wenn leer/ungültig. */
     private function parse_dt( string $value ): ?string {
         $value = trim( $value );
         if ( $value === '' ) return null;
-        $ts = strtotime( $value );
-        if ( $ts === false ) return null;
-        return gmdate( 'Y-m-d H:i:s', $ts );
+        try {
+            $dt = new \DateTimeImmutable( $value );
+        } catch ( \Exception $e ) {
+            return null;
+        }
+        return $dt->setTimezone( wp_timezone() )->format( 'Y-m-d H:i:s' );
     }
 
     /** Authorization-Header analog zu EVG_Sync::headers() */
