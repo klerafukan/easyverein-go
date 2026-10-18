@@ -4,6 +4,9 @@
  * Initialisiert für jedes .evg-calendar-widget-Element eine eigene
  * EvgCalendar-Instanz. Events werden per AJAX pro Monat geladen und
  * gecacht. Klick auf Tag → Popup · Klick auf Termin → Modal.
+ *
+ * Ansichten: Monat (Raster) und Liste (Standard bei schmalem Container).
+ * Badges blenden Kalender ein/aus; Auswahl und Ansicht merkt sich der Browser.
  */
 /* global EVG_CAL */
 (function ($) {
@@ -44,13 +47,64 @@
         return parts + ', ' + formatTime(dtStr);
     }
 
-    function formatTimeRange(ev) {
+    function parseDt(dtStr) {
+        if (!dtStr) { return null; }
+        var d = new Date(dtStr.replace(' ', 'T'));
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function shortDate(d) {
+        return String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.';
+    }
+
+    function longDay(d) {
+        return d.toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+    }
+
+    /** Erster und letzter Kalendertag eines Termins (Ende 00:00 bzw. ganztägig zählt zum Vortag). */
+    function eventSpan(ev) {
+        var s = parseDt(ev.start_dt);
+        var e = parseDt(ev.end_dt) || s;
+        if (!s) { return null; }
+        if (e > s && (ev.all_day || (e.getHours() === 0 && e.getMinutes() === 0))) {
+            e = new Date(e.getTime() - 1);
+        }
+        if (e < s) { e = s; }
+        return {
+            start: new Date(s.getFullYear(), s.getMonth(), s.getDate()),
+            end:   new Date(e.getFullYear(), e.getMonth(), e.getDate())
+        };
+    }
+
+    function isMultiDay(ev) {
+        var sp = eventSpan(ev);
+        return !!sp && sp.end > sp.start;
+    }
+
+    /** Kurzes Zeit-Label für Popup und Liste. */
+    function timeLabel(ev) {
+        if (isMultiDay(ev)) {
+            var sp = eventSpan(ev);
+            return shortDate(sp.start) + ' – ' + shortDate(sp.end) + (sp.end.getFullYear() !== sp.start.getFullYear() ? sp.end.getFullYear() : '');
+        }
         if (ev.all_day) { return 'Ganztägig'; }
+        var t = formatTime(ev.start_dt).replace(' Uhr', '');
+        return parseDt(ev.end_dt) ? t + '–' + formatTime(ev.end_dt).replace(' Uhr', '') : t + ' Uhr';
+    }
+
+    function formatTimeRange(ev) {
+        var sp = eventSpan(ev);
+        if (ev.all_day) {
+            if (sp && sp.end > sp.start) {
+                return longDay(sp.start) + ' – ' + longDay(sp.end) + ' ' + sp.end.getFullYear() + ' (ganztägig)';
+            }
+            return sp ? longDay(sp.start) + ', ganztägig' : 'Ganztägig';
+        }
         var s = formatDate(ev.start_dt);
         if (ev.end_dt) {
-            var endDate = new Date(ev.end_dt.replace(' ', 'T'));
-            var startDate = new Date(ev.start_dt.replace(' ', 'T'));
-            if (!isNaN(endDate.getTime())) {
+            var endDate = parseDt(ev.end_dt);
+            var startDate = parseDt(ev.start_dt);
+            if (endDate && startDate) {
                 // Same day: only show end time
                 if (endDate.toDateString() === startDate.toDateString()) {
                     return s + ' – ' + formatTime(ev.end_dt);
@@ -61,6 +115,11 @@
         return s;
     }
 
+    var store = {
+        get: function (k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+        set: function (k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* egal */ } }
+    };
+
     // ── EvgCalendar class ─────────────────────────────────────────────────────
 
     function EvgCalendar(el) {
@@ -68,8 +127,15 @@
         this.calFilter   = this.$el.data('calendars') || '';
         this.year        = new Date().getFullYear();
         this.month       = new Date().getMonth() + 1;
-        this.cache       = {};        // "YYYY-MM" → {events, colors}
+        this.cache       = {};        // "YYYY-MM" → {events, calendars}
         this.dayEvents   = {};        // day (int) → [events] for current month
+        this.data        = null;      // zuletzt geladener Monat
+        this.calendars   = [];        // Badges: [{id, name, color}]
+        this.storeKey    = 'evg_cal_hidden_' + this.calFilter;
+        this.hidden      = {};
+        var self0 = this;
+        (store.get(this.storeKey) || '').split(',').forEach(function (id) { if (id !== '') { self0.hidden[id] = true; } });
+        this.view        = store.get('evg_cal_view') || (this.$el.width() < 560 ? 'list' : 'month');
         this.$popup      = null;
         this.$modal      = null;
         this._build();
@@ -91,9 +157,16 @@
                 '<span class="evg-cal-title-month"></span>' +
                 '<button class="evg-cal-next" aria-label="Nächster Monat">&#8250;</button>' +
             '</div>' +
+            '<div class="evg-cal-toolbar">' +
+                '<div class="evg-cal-badges" role="group" aria-label="Kalender ein- und ausblenden"></div>' +
+                '<div class="evg-cal-views" role="group" aria-label="Ansicht">' +
+                    '<button type="button" data-view="month">Monat</button>' +
+                    '<button type="button" data-view="list">Liste</button>' +
+                '</div>' +
+            '</div>' +
             '<div class="evg-cal-weekdays">' + weekdayHtml + '</div>' +
             '<div class="evg-cal-grid evg-cal-loading"></div>' +
-            '<div class="evg-cal-legend"></div>'
+            '<div class="evg-cal-list"></div>'
         );
 
         // Shared popup (one per page)
@@ -127,6 +200,30 @@
         // Navigation
         this.$el.on('click', '.evg-cal-prev', function () { self._navigate(-1); });
         this.$el.on('click', '.evg-cal-next', function () { self._navigate(1); });
+
+        // Ansicht wechseln
+        this.$el.on('click', '.evg-cal-views button', function () {
+            self.view = $(this).data('view');
+            store.set('evg_cal_view', self.view);
+            self._closePopup();
+            if (self.data) { self._render(self.data); }
+        });
+
+        // Badge: Kalender ein-/ausblenden
+        this.$el.on('click', '.evg-cal-badge', function () {
+            var id = String($(this).data('cal'));
+            if (self.hidden[id]) { delete self.hidden[id]; } else { self.hidden[id] = true; }
+            store.set(self.storeKey, Object.keys(self.hidden).join(','));
+            self._closePopup();
+            if (self.data) { self._render(self.data); }
+        });
+
+        // Termin in der Liste → Modal
+        this.$el.on('click', '.evg-cal-list-item', function () {
+            var evId = parseInt($(this).data('evid'), 10);
+            var ev = (self.data.events || []).filter(function (x) { return x.id === evId; })[0];
+            if (ev) { self._showModal(ev); }
+        });
 
         // Close popup on outside click
         $(document).on('click.evg-cal-' + this.$el.index(), function (e) {
@@ -183,64 +280,103 @@
     // ── Render ────────────────────────────────────────────────────────────────
 
     EvgCalendar.prototype._render = function (data) {
-        var events = data.events || [];
-        var colors = data.colors || {};
+        var self   = this;
+        this.data  = data;
+        this._mergeCalendars(data.calendars || []);
+        this._renderBadges();
 
-        // Group events by day (number)
+        var events = (data.events || []).filter(function (ev) { return !self.hidden[String(ev.calendar_id)]; });
+
+        // Termine den Tagen des Monats zuordnen – mehrtägige an jedem ihrer Tage
+        var monthStart  = new Date(this.year, this.month - 1, 1);
+        var daysInMonth = new Date(this.year, this.month, 0).getDate();
+        var monthEnd    = new Date(this.year, this.month - 1, daysInMonth);
         var byDay = {};
         events.forEach(function (ev) {
-            var d = ev.day;
-            if (!byDay[d]) { byDay[d] = []; }
-            byDay[d].push(ev);
+            var sp = eventSpan(ev);
+            if (!sp) { return; }
+            var d = sp.start < monthStart ? new Date(monthStart) : new Date(sp.start);
+            var last = sp.end > monthEnd ? monthEnd : sp.end;
+            for (; d <= last; d.setDate(d.getDate() + 1)) {
+                var n = d.getDate();
+                (byDay[n] = byDay[n] || []).push(ev);
+            }
         });
         this.dayEvents = byDay;
 
-        // Calendar arithmetic
-        var firstWeekday  = (new Date(this.year, this.month - 1, 1).getDay() + 6) % 7; // Mon=0
-        var daysInMonth   = new Date(this.year, this.month, 0).getDate();
-        var today         = new Date();
-        var todayY        = today.getFullYear();
-        var todayM        = today.getMonth() + 1;
-        var todayD        = today.getDate();
-
-        // Update header
         this.$el.find('.evg-cal-title-month').text(MONTHS_DE[this.month - 1] + ' ' + this.year);
+        this.$el.find('.evg-cal-views button').each(function () {
+            $(this).toggleClass('is-active', $(this).data('view') === self.view)
+                   .attr('aria-pressed', $(this).data('view') === self.view ? 'true' : 'false');
+        });
+        this.$el.toggleClass('evg-cal--list', this.view === 'list');
+        this.$el.find('.evg-cal-grid').removeClass('evg-cal-loading');
 
-        // Build grid HTML
+        if (this.view === 'list') {
+            this._renderList(byDay, daysInMonth);
+        } else {
+            this._renderGrid(byDay, daysInMonth);
+        }
+    };
+
+    /** Kalenderliste für die Badges über alle geladenen Monate zusammenführen. */
+    EvgCalendar.prototype._mergeCalendars = function (cals) {
+        var known = {};
+        this.calendars.forEach(function (c) { known[c.id] = true; });
+        var self = this;
+        cals.forEach(function (c) { if (!known[c.id]) { self.calendars.push(c); } });
+    };
+
+    EvgCalendar.prototype._renderBadges = function () {
+        var self = this;
+        var $b = this.$el.find('.evg-cal-badges');
+        if (this.calendars.length < 2) { $b.empty(); return; }
+        $b.html(this.calendars.map(function (c) {
+            var off = !!self.hidden[String(c.id)];
+            return '<button type="button" class="evg-cal-badge' + (off ? ' is-off' : '') + '" data-cal="' + c.id + '"' +
+                ' aria-pressed="' + (off ? 'false' : 'true') + '" style="--evg-badge:' + escHtml(c.color) + ';">' +
+                '<span class="evg-cal-badge-dot"></span>' + escHtml(c.name) + '</button>';
+        }).join(''));
+    };
+
+    EvgCalendar.prototype._renderGrid = function (byDay, daysInMonth) {
+        var firstWeekday  = (new Date(this.year, this.month - 1, 1).getDay() + 6) % 7; // Mon=0
+        var today         = new Date();
         var html      = '';
         var cellCount = 0;
 
-        // Leading empty cells
         for (var i = 0; i < firstWeekday; i++) {
             html += '<div class="evg-cal-day evg-cal-day--empty"></div>';
             cellCount++;
         }
 
-        // Day cells
         for (var d = 1; d <= daysInMonth; d++) {
-            var dayEvs   = byDay[d] || [];
-            var isToday  = (this.year === todayY && this.month === todayM && d === todayD);
-            var hasEvs   = dayEvs.length > 0;
-            var classes  = 'evg-cal-day';
-            if (isToday) { classes += ' evg-cal-day--today'; }
-            if (hasEvs)  { classes += ' evg-cal-day--has-events'; }
+            var dayEvs  = byDay[d] || [];
+            var isToday = (this.year === today.getFullYear() && this.month === today.getMonth() + 1 && d === today.getDate());
+            var classes = 'evg-cal-day';
+            if (isToday)       { classes += ' evg-cal-day--today'; }
+            if (dayEvs.length) { classes += ' evg-cal-day--has-events'; }
 
-            // Max 3 visible dots
-            var dots = dayEvs.slice(0, 3).map(function (ev) {
-                return '<span class="evg-cal-dot" style="background:' + escHtml(ev.calendar_color) + ';"></span>';
+            // Mehrtägige als Balken (max. 2), andere als Punkte (max. 3)
+            var multi  = dayEvs.filter(isMultiDay);
+            var single = dayEvs.filter(function (ev) { return !isMultiDay(ev); });
+            var bars = multi.slice(0, 2).map(function (ev) {
+                return '<span class="evg-cal-bar' + (ev.canceled ? ' is-canceled' : '') + '" style="background:' + escHtml(ev.calendar_color) + ';" title="' + escHtml(ev.name) + '"></span>';
             }).join('');
-            var more = dayEvs.length > 3
-                ? '<span class="evg-cal-more">+' + (dayEvs.length - 3) + '</span>'
-                : '';
+            var dots = single.slice(0, 3).map(function (ev) {
+                return '<span class="evg-cal-dot' + (ev.canceled ? ' is-canceled' : '') + '" style="--evg-dot:' + escHtml(ev.calendar_color) + ';"></span>';
+            }).join('');
+            var rest = Math.max(0, multi.length - 2) + Math.max(0, single.length - 3);
+            var more = rest ? '<span class="evg-cal-more">+' + rest + '</span>' : '';
 
             html += '<div class="' + classes + '" data-day="' + d + '">' +
                 '<span class="evg-cal-day-num">' + d + '</span>' +
+                (bars ? '<span class="evg-cal-bars">' + bars + '</span>' : '') +
                 '<span class="evg-cal-dots">' + dots + more + '</span>' +
                 '</div>';
             cellCount++;
         }
 
-        // Trailing empty cells
         var remainder = cellCount % 7;
         if (remainder !== 0) {
             for (var t = 0; t < 7 - remainder; t++) {
@@ -249,26 +385,45 @@
         }
 
         var $grid = this.$el.find('.evg-cal-grid');
-        $grid.removeClass('evg-cal-loading').html(html);
+        $grid.html(html);
+        this.$el.find('.evg-cal-list').empty();
 
-        // Day click
         var self = this;
         $grid.off('click.evg-day').on('click.evg-day', '.evg-cal-day--has-events', function (e) {
-            var day      = parseInt($(this).data('day'), 10);
-            var dayEvts  = self.dayEvents[day] || [];
-            self._showPopup($(this), dayEvts);
+            var day = parseInt($(this).data('day'), 10);
+            self._showPopup($(this), self.dayEvents[day] || []);
             e.stopPropagation();
         });
+    };
 
-        // Legend
-        var legendHtml = Object.keys(colors).map(function (id) {
-            var info = colors[id];
-            return '<span class="evg-cal-legend-item">' +
-                '<span class="evg-cal-legend-dot" style="background:' + escHtml(info.color) + ';"></span>' +
-                '<span>' + escHtml(info.name) + '</span>' +
-                '</span>';
-        }).join('');
-        this.$el.find('.evg-cal-legend').html(legendHtml);
+    /** Liste: jeder Tag mit Terminen; mehrtägige nur am ersten Tag im Monat. */
+    EvgCalendar.prototype._renderList = function (byDay, daysInMonth) {
+        var shown = {};
+        var today = new Date();
+        var html  = '';
+        for (var d = 1; d <= daysInMonth; d++) {
+            var evs = (byDay[d] || []).filter(function (ev) {
+                if (shown[ev.id]) { return false; }
+                shown[ev.id] = true;
+                return true;
+            });
+            if (!evs.length) { continue; }
+            var date = new Date(this.year, this.month - 1, d);
+            var isToday = date.toDateString() === today.toDateString();
+            html += '<div class="evg-cal-list-day' + (isToday ? ' is-today' : '') + '">' +
+                '<div class="evg-cal-list-date">' + escHtml(longDay(date)) + (isToday ? ' · heute' : '') + '</div>' +
+                '<ul>' + evs.map(function (ev) {
+                    return '<li class="evg-cal-list-item' + (ev.canceled ? ' is-canceled' : '') + '" data-evid="' + ev.id + '" tabindex="0" style="--evg-dot:' + escHtml(ev.calendar_color) + ';">' +
+                        '<span class="evg-cal-list-time">' + escHtml(timeLabel(ev)) + '</span>' +
+                        '<span class="evg-cal-list-main">' +
+                            '<span class="evg-cal-list-name">' + escHtml(ev.name) + (ev.canceled ? ' <em>abgesagt</em>' : '') + '</span>' +
+                            (ev.location_name ? '<span class="evg-cal-list-loc">' + escHtml(ev.location_name) + '</span>' : '') +
+                        '</span>' +
+                    '</li>';
+                }).join('') + '</ul></div>';
+        }
+        this.$el.find('.evg-cal-grid').empty();
+        this.$el.find('.evg-cal-list').html(html || '<p class="evg-cal-list-empty">Keine Termine in diesem Monat.</p>');
     };
 
     // ── Popup ─────────────────────────────────────────────────────────────────
@@ -279,11 +434,10 @@
         var dateStr = MONTHS_DE[this.month - 1].substring(0, 3) + '. ' + dayNum + '.';
 
         var itemsHtml = events.map(function (ev) {
-            var timeLabel = ev.all_day ? 'Ganztägig' : formatTime(ev.start_dt);
-            return '<li class="evg-cal-popup-item" data-evid="' + ev.id + '">' +
+            return '<li class="evg-cal-popup-item' + (ev.canceled ? ' is-canceled' : '') + '" data-evid="' + ev.id + '">' +
                 '<span class="evg-cal-popup-dot" style="background:' + escHtml(ev.calendar_color) + ';"></span>' +
                 '<span class="evg-cal-popup-text">' +
-                    '<span class="evg-cal-popup-time">' + escHtml(timeLabel) + '</span>' +
+                    '<span class="evg-cal-popup-time">' + escHtml(timeLabel(ev)) + (ev.canceled ? ' · abgesagt' : '') + '</span>' +
                     '<span class="evg-cal-popup-name">' + escHtml(ev.name) + '</span>' +
                 '</span>' +
                 '</li>';
@@ -363,6 +517,7 @@
             '<div class="evg-cal-modal-body">' +
                 '<h3 class="evg-cal-modal-event-title">' + escHtml(ev.name) + '</h3>' +
                 '<p class="evg-cal-modal-event-calendar">' + escHtml(ev.calendar_name) + '</p>' +
+                (ev.canceled ? '<p class="evg-cal-modal-event-canceled">Dieser Termin ist abgesagt.</p>' : '') +
                 '<div class="evg-cal-modal-event-meta">' +
                     '<div class="evg-cal-modal-event-row">' +
                         '<span class="evg-icon">🕐</span>' +

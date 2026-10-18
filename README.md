@@ -70,10 +70,12 @@ Der Shortcode `[evg_calendar]` rendert einen interaktiven Monats-Kalender aus de
 
 - **Read-Only** – Gäste sehen öffentliche Termine, angemeldete Mitglieder zusätzlich die für sie freigegebenen (siehe *Termin-Sync und Sichtbarkeit*)
 - **Monat-Navigation** mit Prev/Next-Tasten
-- **Farbige Event-Punkte** pro Tag (Farbe = Kalender-Farbe aus EasyVerein)
+- **Zwei Ansichten:** Monat (Raster) und Liste; bei schmalem Container (Handy) startet die Liste. Die Wahl merkt sich der Browser.
+- **Badges** pro Kalender (Farbe aus EasyVerein) blenden Kalender ein/aus; die Auswahl merkt sich der Browser
+- **Farbige Event-Punkte** pro Tag, **mehrtägige Termine** als Balken über alle ihre Tage
+- **Abgesagte Termine** bleiben sichtbar (Ring statt Punkt, durchgestrichen, Hinweis im Modal)
 - **Tages-Popup** beim Klick auf einen Tag mit Terminen (Zeit + Termin-Name)
 - **Detail-Modal** beim Klick auf einen Termin (Titel, Kalender, Uhrzeit, Ort, Beschreibung)
-- **Kalender-Legende** mit Farbzuordnung unterhalb des Grids
 - Responsiv (mobile-gerecht), kein Login erforderlich
 
 ### Termin-Sync und Sichtbarkeit

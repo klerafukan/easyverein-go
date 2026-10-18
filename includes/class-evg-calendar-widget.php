@@ -73,7 +73,8 @@ class EVG_Calendar_Widget {
     // ── AJAX ─────────────────────────────────────────────────────────────────
 
     public function ajax_get_events(): void {
-        check_ajax_referer( 'evg_cal_nonce', 'nonce' );
+        // Nur Lesen: Bei ungültiger Nonce (z. B. Seite aus dem Cache) gibt es die Gastansicht statt eines Fehlers.
+        $user_id = check_ajax_referer( 'evg_cal_nonce', 'nonce', false ) ? get_current_user_id() : 0;
 
         $year  = isset( $_POST['year'] )  ? (int) $_POST['year']  : (int) gmdate( 'Y' );
         $month = isset( $_POST['month'] ) ? (int) $_POST['month'] : (int) gmdate( 'n' );
@@ -93,7 +94,7 @@ class EVG_Calendar_Widget {
         $cal_ids_raw = isset( $_POST['calendars'] ) ? sanitize_text_field( wp_unslash( $_POST['calendars'] ) ) : '';
         $cal_ids     = array_values( array_filter( array_map( 'intval', explode( ',', $cal_ids_raw ) ) ) );
 
-        $visible_sql = ' AND ' . EVG_Events_Sync::visibility_sql( get_current_user_id() );
+        $visible_sql = ' AND ' . EVG_Events_Sync::visibility_sql( $user_id );
 
         $cal_filter_sql = '';
         if ( ! empty( $cal_ids ) ) {
@@ -102,6 +103,7 @@ class EVG_Calendar_Widget {
             $cal_filter_sql = $wpdb->prepare( " AND e.calendar_id IN ($placeholders)", $cal_ids );
         }
 
+        // Alle Termine, die den Monat berühren – auch mehrtägige, die vorher beginnen
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $sql = $wpdb->prepare(
             "SELECT e.id, e.name, e.start_dt, e.end_dt, e.all_day,
@@ -109,33 +111,20 @@ class EVG_Calendar_Widget {
                     c.name AS calendar_name, c.color AS calendar_color
              FROM {$p}evg_events e
              LEFT JOIN {$p}evg_calendars c ON c.id = e.calendar_id
-             WHERE e.start_dt >= %s
-               AND e.start_dt <= %s
-               AND e.canceled = 0"
+             WHERE e.start_dt <= %s
+               AND COALESCE(e.end_dt, e.start_dt) >= %s
+               AND e.is_reservation = 0"
             . $visible_sql
             . $cal_filter_sql
             . " ORDER BY e.start_dt ASC",
-            $from,
-            $to
+            $to,
+            $from
         );
 
         $rows = $wpdb->get_results( $sql, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         $events = [];
-        $colors = [];
-
         foreach ( $rows as $row ) {
-            $cal_id = (int) $row['calendar_id'];
-            $color  = ! empty( $row['calendar_color'] ) ? $row['calendar_color'] : '#83c324';
-            $cal_nm = $row['calendar_name'] ?? '';
-
-            if ( ! isset( $colors[ $cal_id ] ) ) {
-                $colors[ $cal_id ] = [
-                    'color' => $color,
-                    'name'  => $cal_nm,
-                ];
-            }
-
             // Beschreibung: nur sicheres HTML erlauben
             $desc = wp_kses( $row['description'] ?? '', [
                 'p'      => [],
@@ -150,21 +139,45 @@ class EVG_Calendar_Widget {
             $events[] = [
                 'id'             => (int) $row['id'],
                 'name'           => $row['name'],
-                'day'            => (int) substr( $row['start_dt'], 8, 2 ),
                 'start_dt'       => $row['start_dt'],
                 'end_dt'         => $row['end_dt'],
                 'all_day'        => (int) $row['all_day'],
+                'canceled'       => (int) $row['canceled'],
                 'location_name'  => $row['location_name'],
                 'description'    => $desc,
-                'calendar_id'    => $cal_id,
-                'calendar_name'  => $cal_nm,
-                'calendar_color' => $color,
+                'calendar_id'    => (int) $row['calendar_id'],
+                'calendar_name'  => $row['calendar_name'] ?? '',
+                'calendar_color' => $this->color( $row['calendar_color'] ?? '' ),
+            ];
+        }
+
+        // Badges: alle Kalender, in denen der Benutzer überhaupt Termine sieht
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $cal_rows = $wpdb->get_results(
+            "SELECT DISTINCT COALESCE(e.calendar_id, 0) AS id, c.name, c.color
+             FROM {$p}evg_events e
+             LEFT JOIN {$p}evg_calendars c ON c.id = e.calendar_id
+             WHERE e.is_reservation = 0" . $visible_sql . $cal_filter_sql . "
+             ORDER BY c.name IS NULL, c.name",
+            ARRAY_A
+        );
+        $calendars = [];
+        foreach ( (array) $cal_rows as $c ) {
+            $calendars[] = [
+                'id'    => (int) $c['id'],
+                'name'  => $c['name'] ?: __( 'Weitere Termine', 'ev-groups' ),
+                'color' => $this->color( $c['color'] ?? '' ),
             ];
         }
 
         wp_send_json_success( [
-            'events' => $events,
-            'colors' => $colors,
+            'events'    => $events,
+            'calendars' => $calendars,
         ] );
+    }
+
+    /** Nur gültige Hex-Farben durchlassen (landen im style-Attribut). */
+    private function color( string $c ): string {
+        return preg_match( '/^#[0-9a-f]{3,6}$/i', $c ) ? $c : '#83c324';
     }
 }
