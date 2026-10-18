@@ -296,7 +296,8 @@ class EVG_Sync {
     }
     private function calls_per_tick(){ return max(1,(int)get_option('evg_sync_calls_per_tick',5)); }
     private function pages_max(){ return max(1,(int)get_option('evg_sync_next_pages_max',100)); }
-    private function rate_sleep(){ $r=max(1,(int)get_option('evg_sync_rate_per_sec',5)); usleep((int)(1000000 / max(1,$r))); }
+    // Die Drosselung übernimmt evg_api_throttle() zentral in evg_http_get().
+    private function rate_sleep(){}
     private function get_state(){ $s=get_option($this->state_key); return is_array($s)?$s:[]; }
     private function put_state($s){ update_option($this->state_key,$s,false); }
     private function clear_state(){ delete_option($this->state_key); }
@@ -699,6 +700,8 @@ class EVG_Sync {
                 elseif ($cd) { $durl=$this->base().$cd; }
                 else { $durl=$this->base().str_replace('{id}',rawurlencode($mid),get_option('evg_contact_details_path','/api/v3.0/contact-details/{id}')); }
                 $resp = evg_http_get($durl,$this->headers()); $calls++; $this->rate_sleep();
+                // 429 trotz Retries: Mitglied nicht überspringen, im nächsten Tick erneut versuchen
+                if (!is_wp_error($resp) && wp_remote_retrieve_response_code($resp)===429) break;
                 if (!is_wp_error($resp) && ($c=wp_remote_retrieve_response_code($resp))>=200 && $c<300){
                     $raw_body = wp_remote_retrieve_body($resp);
                     $d = json_decode($raw_body,true);
@@ -720,7 +723,7 @@ class EVG_Sync {
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)){ $s['member_index']++; continue; }
                 $code = wp_remote_retrieve_response_code($resp);
-                if ($code===429){ $s['member_index']++; $this->put_state($s); return ['ok'=>false,'summary'=>'Rate limited (CF), will retry next tick']; }
+                if ($code===429) break; // im nächsten Tick dasselbe Mitglied erneut versuchen
                 if ($code<200||$code>=300){ $s['member_index']++; continue; }
                 $payload = json_decode(wp_remote_retrieve_body($resp),true);
                 $items   = $this->extract_items_from_payload($payload);
@@ -752,7 +755,7 @@ class EVG_Sync {
                 $resp = evg_http_get($url,$this->headers()); $calls++; $this->rate_sleep();
                 if (is_wp_error($resp)){ $s['member_index']++; continue; }
                 $code = wp_remote_retrieve_response_code($resp);
-                if ($code===429){ $s['member_index']++; $this->put_state($s); return ['ok'=>false,'summary'=>'Rate limited (groups), will retry next tick']; }
+                if ($code===429) break; // im nächsten Tick dasselbe Mitglied erneut versuchen
                 if ($code<200||$code>=300){ $s['member_index']++; continue; }
                 $arr   = json_decode(wp_remote_retrieve_body($resp),true);
                 $items = $this->extract_items_from_payload($arr);

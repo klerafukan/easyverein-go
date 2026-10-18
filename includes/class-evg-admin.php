@@ -42,7 +42,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_member_custom_fields_path');
         register_setting('evg_settings','evg_debug',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
         register_setting('evg_settings','evg_sync_next_pages_max',['type'=>'integer','sanitize_callback'=>'absint','default'=>100]);
-        register_setting('evg_settings','evg_sync_rate_per_sec',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
+        register_setting('evg_settings','evg_api_requests_per_minute',['type'=>'integer','sanitize_callback'=>function($v){ return min(100,max(10,absint($v))); },'default'=>90]);
         register_setting('evg_settings','evg_sync_calls_per_tick',['type'=>'integer','sanitize_callback'=>'absint','default'=>5]);
         register_setting('evg_settings','evg_tick_pause_ms',['type'=>'integer','sanitize_callback'=>'absint','default'=>900]);
         register_setting('evg_settings','evg_nightly_sync_enabled',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
@@ -50,7 +50,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
         register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
         register_setting('evg_settings','evg_nightly_auto_swap',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
-        register_setting('evg_settings','evg_delta_sync_enabled',['type'=>'boolean','sanitize_callback'=>'absint','default'=>1]);
+        register_setting('evg_settings','evg_nightly_mode',['type'=>'string','sanitize_callback'=>function($v){ return $v === 'full' ? 'full' : 'delta'; },'default'=>'delta']);
         // OIDC Web-Login
         register_setting('evg_settings', EVG_Oidc::OPT_CLIENT_ID,    ['sanitize_callback'=>'sanitize_text_field']);
         register_setting('evg_settings', EVG_Oidc::OPT_REDIRECT_URI, ['sanitize_callback'=>'esc_url_raw']);
@@ -118,7 +118,7 @@ class EVG_Admin {
                 <h2><?php echo esc_html__('Taktung & Limits','ev-groups'); ?></h2>
                 <table class="form-table">
                     <tr><th>Max. Seiten (next)</th><td><input type="number" name="evg_sync_next_pages_max" value="<?php echo esc_attr(get_option('evg_sync_next_pages_max',100)); ?>"></td></tr>
-                    <tr><th>Requests/Sek.</th><td><input type="number" name="evg_sync_rate_per_sec" value="<?php echo esc_attr(get_option('evg_sync_rate_per_sec',5)); ?>"></td></tr>
+                    <tr><th>API-Anfragen/Minute</th><td><input type="number" min="10" max="100" name="evg_api_requests_per_minute" value="<?php echo esc_attr(get_option('evg_api_requests_per_minute',90)); ?>"> <span class="description">easyVerein erlaubt 100/Minute; gilt für alle Syncs inkl. Retries.</span></td></tr>
                     <tr><th>Calls pro Tick</th><td><input type="number" name="evg_sync_calls_per_tick" value="<?php echo esc_attr(get_option('evg_sync_calls_per_tick',5)); ?>"></td></tr>
                     <tr><th>Tick-Pause (ms)</th><td><input type="number" name="evg_tick_pause_ms" value="<?php echo esc_attr(get_option('evg_tick_pause_ms',900)); ?>"></td></tr>
                     <tr>
@@ -173,15 +173,14 @@ class EVG_Admin {
                         </td>
                     </tr>
                     <tr>
-                        <th><?php esc_html_e('Delta-Sync (stündlich)','ev-groups'); ?></th>
+                        <th><?php esc_html_e('Modus nächtlicher Sync','ev-groups'); ?></th>
                         <td>
-                            <label>
-                                <input type="checkbox" name="evg_delta_sync_enabled" value="1" <?php checked(1,(int)get_option('evg_delta_sync_enabled',1)); ?>>
-                                <?php esc_html_e('Jede Stunde nur Änderungen seit dem letzten Lauf in die Live-Tabellen übernehmen','ev-groups'); ?>
-                            </label>
+                            <?php $mode = EVG_Plugin::nightly_mode(); ?>
+                            <label><input type="radio" name="evg_nightly_mode" value="delta" <?php checked('delta',$mode); ?>> <?php esc_html_e('Delta – nur Änderungen direkt in die Live-Tabellen (empfohlen)','ev-groups'); ?></label><br>
+                            <label><input type="radio" name="evg_nightly_mode" value="full" <?php checked('full',$mode); ?>> <?php esc_html_e('Voll – kompletter Sync in die Nightly-Tabellen (Präfix oben, optional Auto-Swap)','ev-groups'); ?></label>
                             <p class="description">
                                 <?php
-                                esc_html_e('Holt geänderte Mitglieder, Kontaktdaten und Zusatzfelder über updated_at und gleicht Löschungen sowie Gruppen-Zuordnungen über ID-Listen ab (ca. 70–100 API-Aufrufe statt mehrerer Tausend). Der nächtliche Voll-Sync bleibt als Sicherheitsnetz bestehen.','ev-groups');
+                                esc_html_e('Delta holt geänderte Mitglieder, Kontaktdaten und Zusatzfelder über updated_at und gleicht Löschungen sowie Gruppen-Zuordnungen über ID-Listen ab (ca. 85 API-Aufrufe statt mehrerer Tausend). Einen kompletten Sync startest du bei Bedarf unten mit „Komplett synchronisieren“.','ev-groups');
                                 echo ' '.wp_kses_post($this->delta_status_html());
                                 ?>
                             </p>
@@ -224,9 +223,9 @@ class EVG_Admin {
 
             <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-width:900px;margin-top:12px">
                 <h2><?php echo esc_html__('Manueller Sync','ev-groups'); ?></h2>
-                <p><?php echo esc_html__('Ablauf: Mitglieder (paginiert) → Contact-Details → optional Member→Groups.','ev-groups'); ?></p>
+                <p><?php echo esc_html__('„Komplett synchronisieren“ leert die Live-Tabellen und lädt alles neu (dauert ca. eine Stunde, Gruppen fehlen währenddessen). „Nur Änderungen holen“ aktualisiert in 1–2 Minuten ohne Unterbrechung.','ev-groups'); ?></p>
                 <p>
-                    <button id="evg-sync-start" class="button button-primary"><?php echo esc_html__('Jetzt synchronisieren','ev-groups'); ?></button>
+                    <button id="evg-sync-start" class="button button-primary"><?php echo esc_html__('Komplett synchronisieren','ev-groups'); ?></button>
                     <button id="evg-sync-quick10" class="button"><?php echo esc_html__('Nur 10 Mitglieder testen','ev-groups'); ?></button>
                     <button id="evg-sync-stop" class="button" style="display:none;color:#dc2626;border-color:#dc2626"><?php echo esc_html__('Stop','ev-groups'); ?></button>
                     <button id="evg-delta-run" class="button"><?php echo esc_html__('Nur Änderungen holen (Delta)','ev-groups'); ?></button>
@@ -837,12 +836,17 @@ class EVG_Admin {
         wp_send_json_success(['content' => $content]);
     }
 
+    private static function nightly_delta_next(){
+        if (EVG_Plugin::nightly_mode() !== 'delta') return 0;
+        return (int) wp_next_scheduled('evg_nightly_sync');
+    }
+
     private function delta_status_html(){
         $res = get_option(EVG_Sync::delta_result_option(EVG_Plugin::live_table_prefix()), []);
         if (!is_array($res) || empty($res['finished'])) {
             return '<strong>'.esc_html__('Noch kein Lauf.','ev-groups').'</strong>';
         }
-        $next = wp_next_scheduled('evg_delta_sync');
+        $next = self::nightly_delta_next();
         return sprintf('<strong>%s %s:</strong> %s (%s s, %d %s)%s',
             esc_html__('Letzter Lauf','ev-groups'),
             esc_html(wp_date('d.m.Y H:i', (int)$res['finished'])),
@@ -850,7 +854,7 @@ class EVG_Admin {
             esc_html((string)($res['seconds'] ?? '')),
             (int)($res['calls'] ?? 0),
             esc_html__('Aufrufe','ev-groups'),
-            $next ? ' – '.esc_html__('nächster:','ev-groups').' '.esc_html(wp_date('H:i', $next)) : ''
+            $next ? ' – '.esc_html__('nächster:','ev-groups').' '.esc_html(wp_date('d.m. H:i', $next)) : ''
         );
     }
 

@@ -232,6 +232,35 @@ function evg_mark_api_key_refreshed(){
     update_option('evg_api_key_refreshed_at', time());
 }
 
+/**
+ * Zentrale Drosselung aller Aufrufe der easyVerein-API in diesem PHP-Prozess.
+ * Die API erlaubt 100 Anfragen pro Minute; Standard sind 90, damit Events-Sync
+ * oder parallele Prozesse etwas Luft haben. Retries zählen mit.
+ */
+function evg_api_throttle(){
+    static $last = 0.0;
+    $per_min = (int) apply_filters('evg_api_requests_per_minute', (int) get_option('evg_api_requests_per_minute', 90));
+    $per_min = min(100, max(10, $per_min));
+    $gap  = 60.0 / $per_min;
+    $wait = $last + $gap - microtime(true);
+    if ($wait > 0){
+        usleep((int) ceil($wait * 1000000));
+    }
+    $last = microtime(true);
+}
+
+/** Wartezeit (Sekunden) aus einer 429-Antwort: Retry-After-Header oder "… in N Sekunden" im Text. */
+function evg_retry_after_seconds($resp){
+    $h = trim((string) wp_remote_retrieve_header($resp,'retry-after'));
+    if ($h !== '' && ctype_digit($h)){
+        return (int) $h;
+    }
+    if (preg_match('/(\d+)\s*(?:Sekunde|second)/iu', (string) wp_remote_retrieve_body($resp), $m)){
+        return (int) $m[1];
+    }
+    return 0;
+}
+
 function evg_http_get($url,$headers=[],$args=[]){
     $max_attempts = max(1, (int) apply_filters('evg_http_max_attempts', 4, $url));
     $base_backoff = max(1, (int) apply_filters('evg_http_retry_base_delay', 5, $url));
@@ -244,6 +273,8 @@ function evg_http_get($url,$headers=[],$args=[]){
     $resp = null;
     while ($attempt < $max_attempts){
         $attempt++;
+        $retry = 0;
+        evg_api_throttle();
         $resp = wp_remote_get($url, $args);
         $ctx = ['method'=>'GET','url'=>$url,'headers'=>$headers,'note'=>'attempt '.$attempt.'/'.$max_attempts];
         if (is_wp_error($resp)){
@@ -257,7 +288,7 @@ function evg_http_get($url,$headers=[],$args=[]){
         } else {
             $code = wp_remote_retrieve_response_code($resp);
             $body = wp_remote_retrieve_body($resp);
-            $retry= wp_remote_retrieve_header($resp,'retry-after');
+            $retry= $code === 429 ? evg_retry_after_seconds($resp) : 0;
             $ctx['status']=$code;
             $ctx['body']=$body;
             if($retry){
@@ -288,7 +319,8 @@ function evg_http_get($url,$headers=[],$args=[]){
             }
         }
         if ($attempt < $max_attempts){
-            $sleep = isset($retry) && $retry !== null ? (int) $retry : ($base_backoff * $attempt);
+            // Vorgabe der API (+1 s Puffer), sonst steigender Backoff 5/10/15 s
+            $sleep = $retry > 0 ? $retry + 1 : ($base_backoff * $attempt);
             if ($sleep > 60){
                 $sleep = 60;
             }

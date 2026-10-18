@@ -27,15 +27,15 @@ Alle Stamm- und Zuordnungsdaten werden in sechs aufeinanderfolgenden Phasen heru
 5. `member_cf` – Custom-Field-Werte pro Mitglied
 6. `member_groups` – Gruppen-Zuordnungen pro Mitglied
 
-API-Aufrufe erfolgen **per Member** (kein Bulk), um HTTP-429-Rate-Limiting zu vermeiden. Fehlertolerante Aufrufe mit automatischem Retry/Backoff sind eingebaut. Die WP-Option `evg_last_sync_completed` wird nach jedem abgeschlossenen Lauf aktualisiert.
+Der Voll-Sync fragt **pro Mitglied** ab (~3 Aufrufe je Mitglied, ca. eine Stunde). Alle API-Aufrufe laufen über `evg_http_get()` mit zentraler Drosselung auf 90 Anfragen/Minute (Option `evg_api_requests_per_minute`, max. 100 = Limit der easyVerein-API). Bei HTTP 429 wird die von der API genannte Wartezeit abgewartet; bleibt es bei 429, versucht der Voll-Sync dasselbe Mitglied im nächsten Tick erneut, statt es zu überspringen. Die WP-Option `evg_last_sync_completed` wird nach jedem abgeschlossenen Lauf aktualisiert.
 
 **Sync-Modi im Admin:**
 
-- **Manueller Sync** – startet einen vollständigen Lauf mit Fortschrittsbalken und Tick-by-Tick-Log; jederzeit per Stop-Button abbrechbar
+- **Komplett synchronisieren** – vollständiger Lauf in die Live-Tabellen mit Fortschrittsbalken und Tick-by-Tick-Log; leert die Tabellen zu Beginn, jederzeit per Stop-Button abbrechbar
+- **Nur Änderungen holen (Delta)** – Delta-Sync in die Live-Tabellen, 1–2 Minuten, ohne Unterbrechung
 - **Quick-10-Test** – verarbeitet nur 10 Mitglieder, schreibt in das Nightly-Präfix, ohne Produktivdaten zu berühren
-- **Nächtlicher Vollsync** – täglich via WP-Cron (ca. 03:00 Uhr, per Checkbox aktivierbar)
+- **Nächtlicher Sync** – täglich ca. 03:00 Uhr (WP-Cron und/oder System-Cron `bin/nightly-sync.sh`); Modus einstellbar: **Delta** (Standard) oder **Voll** in die Nightly-Tabellen
 - **Nightly-Sync manuell simulieren** – vollständiger Lauf in die Spiegel-Tabellen direkt aus dem Admin heraus
-- **Delta-Sync** – stündlich (WP-Cron `evg_delta_sync`) oder per Button „Nur Änderungen holen“; siehe unten
 
 ### Delta-Sync
 
@@ -44,7 +44,7 @@ Der Delta-Sync aktualisiert die Live-Tabellen (Präfix aus „Tabellen-Präfix (
 - geänderte Mitglieder, Kontaktdaten und Custom-Field-Werte über `updated_at__gte` (Kontaktdaten nur mit den benötigten Feldern, keine Bankdaten)
 - schlanke ID-Listen (`query={id,…}`) für gelöschte Mitglieder, Gruppen-Zuordnungen und entfernte Custom-Field-Werte
 
-Ein Lauf braucht rund 70–100 API-Aufrufe (1–2 Minuten). Ausgangspunkt ist der Start des letzten erfolgreichen Delta-Laufs bzw. vollständigen Syncs (Option `evg_delta_since_<präfix>`, 10 Minuten Überlappung). Schlägt ein Schritt fehl oder liefert die API unplausibel wenige Datensätze, bricht der Lauf ohne Löschungen ab und wiederholt beim nächsten Mal denselben Zeitraum. Läuft gerade ein voller Sync in dieselben Tabellen, wird der Delta-Lauf übersprungen. Protokoll: `wp-content/easyverein-debug/delta-YYYYMM.log`.
+Ein Lauf braucht rund 85 API-Aufrufe (ca. 1 Minute bei 90 Anfragen/Minute). Ausgangspunkt ist der Start des letzten erfolgreichen Delta-Laufs bzw. vollständigen Syncs (Option `evg_delta_since_<präfix>`, 10 Minuten Überlappung). Schlägt ein Schritt fehl oder liefert die API unplausibel wenige Datensätze, bricht der Lauf ohne Löschungen ab und wiederholt beim nächsten Mal denselben Zeitraum. Läuft gerade ein voller Sync in dieselben Tabellen, wird der Delta-Lauf übersprungen. Protokoll: `wp-content/easyverein-debug/delta-YYYYMM.log`.
 
 ### Automatische API-Token-Erneuerung
 
