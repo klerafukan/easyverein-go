@@ -47,6 +47,12 @@ class EVG_Calendar_Widget {
             EVG_VERSION,
             true
         );
+
+        // Auf Seiten mit dem Shortcode das CSS schon im <head> laden (sonst erst im Footer → kurz ungestylt)
+        $post = get_post();
+        if ( is_singular() && $post && has_shortcode( $post->post_content, 'evg_calendar' ) ) {
+            wp_enqueue_style( 'evg-calendar' );
+        }
     }
 
     // ── Shortcode ─────────────────────────────────────────────────────────────
