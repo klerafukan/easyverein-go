@@ -6,13 +6,20 @@
  * Verwendet die selben evg_api_key / evg_auth_header / evg_api_base Optionen
  * wie EVG_Sync.
  *
- * Sync-Ablauf:
- *   1. Kalender holen → wp_evg_calendars
+ * Sync-Ablauf (alle 15 Minuten, komplett über das Zeitfenster – ein Delta lohnt
+ * nicht, weil gelöschte Termine nur über die vollständige Liste erkennbar sind):
+ *   1. Kalender holen → wp_evg_calendars (inkl. „Sichtbar für Gruppen“)
  *   2. Orte holen     → wp_evg_locations
- *   3. Events holen   → wp_evg_events  (Fenster: 7 Tage zurück bis 12 Monate voraus)
- *      Termine im Fenster, die die API nicht mehr liefert (gelöscht, nicht mehr
- *      öffentlich, anderer Kalender), werden entfernt.
- *   4. Veraltete Events bereinigen
+ *   3. Termine holen  → wp_evg_events  (Fenster: 30 Tage zurück bis 12 Monate voraus,
+ *      alle Termine außer Raumreservierungen). Termine im Fenster, die die API nicht
+ *      mehr liefert, werden entfernt.
+ *   4. Ältere Termine bereinigen
+ *
+ * Wer welchen Termin sieht, entscheidet erst die Anzeige (visibility_sql()):
+ *   - in easyVerein öffentlich        → alle, auch Gäste
+ *   - Kalender mit Gruppen            → angemeldete Mitglieder in einer dieser Gruppen
+ *   - sonst (nicht öffentlich)        → alle angemeldeten Mitglieder
+ *   - Admins sehen alles
  *
  * Zeiten werden als Ortszeit der Website (Einstellungen → Allgemein → Zeitzone)
  * gespeichert – so erwarten es Kalender-Widget und App.
@@ -21,10 +28,22 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class EVG_Events_Sync {
 
+    private const SCHEMA_VERSION = 2;
+    private const LOCK           = 'evg_events_lock';
+    public  const RESULT_OPTION  = 'evg_events_last_result';
+    private const DAYS_BACK      = 30;
+
+    /** @var int API-Aufrufe im aktuellen Lauf */
+    private $calls = 0;
+
     // ── Tabellen-Schema ──────────────────────────────────────────────────────
 
     public static function ensure_tables() {
         global $wpdb;
+        if ( (int) get_option( 'evg_events_schema', 0 ) === self::SCHEMA_VERSION
+            && $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->prefix . 'evg_events' ) ) ) {
+            return;
+        }
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         $charset = $wpdb->get_charset_collate();
         $p       = $wpdb->prefix;
@@ -34,6 +53,7 @@ class EVG_Events_Sync {
             name        VARCHAR(200)        NOT NULL DEFAULT '',
             color       VARCHAR(7)          NOT NULL DEFAULT '',
             short_code  VARCHAR(4)          NOT NULL DEFAULT '',
+            allowed_groups VARCHAR(2000)    NOT NULL DEFAULT '',
             synced_at   DATETIME            NOT NULL,
             PRIMARY KEY (id)
         ) {$charset};" );
@@ -61,6 +81,7 @@ class EVG_Events_Sync {
             location_id         BIGINT UNSIGNED,
             location_name       VARCHAR(500)    NOT NULL DEFAULT '',
             calendar_id         BIGINT UNSIGNED,
+            series_id           BIGINT UNSIGNED,
             is_public           TINYINT(1)      NOT NULL DEFAULT 1,
             canceled            TINYINT(1)      NOT NULL DEFAULT 0,
             is_reservation      TINYINT(1)      NOT NULL DEFAULT 0,
@@ -69,43 +90,113 @@ class EVG_Events_Sync {
             participation_start DATETIME,
             participation_end   DATETIME,
             access_level        TINYINT UNSIGNED NOT NULL DEFAULT 1,
-            raw_json            LONGTEXT,
             synced_at           DATETIME         NOT NULL,
             PRIMARY KEY (id),
             KEY idx_start      (start_dt),
             KEY idx_calendar   (calendar_id),
             KEY idx_public     (is_public, canceled)
         ) {$charset};" );
+
+        // raw_json enthielt die komplette API-Antwort inkl. Mailadressen und Notizen – nicht mehr speichern
+        if ( $wpdb->get_var( "SHOW COLUMNS FROM {$p}evg_events LIKE 'raw_json'" ) ) {
+            $wpdb->query( "ALTER TABLE {$p}evg_events DROP COLUMN raw_json" );
+        }
+        update_option( 'evg_events_schema', self::SCHEMA_VERSION );
     }
 
     // ── Haupt-Sync-Einstieg ──────────────────────────────────────────────────
 
     /**
-     * Öffentlicher Einstiegspunkt. Gibt Array mit Statusinfo zurück.
+     * Öffentlicher Einstiegspunkt. Schreibt Ergebnis-Option und (bei Fehlern,
+     * Änderungen oder manuellem Start) eine Zeile ins Monats-Log termine-JJJJMM.log.
      *
-     * @return array{ok: bool, calendars: int, locations: int, events: int, error?: string}
+     * @param string $source 'cron' | 'manual' | 'cli'
+     * @return array{ok: bool, message: string, calendars: int, locations: int, events: int, new: int, deleted: int, calls: int, seconds: float, finished: int}
      */
-    public function run(): array {
-        $result = [
-            'ok'        => false,
-            'calendars' => 0,
-            'locations' => 0,
-            'events'    => 0,
-        ];
+    public function run( string $source = 'cron' ): array {
+        $t0     = microtime( true );
+        $result = [ 'ok' => false, 'message' => '', 'calendars' => 0, 'locations' => 0,
+                    'events' => 0, 'new' => 0, 'deleted' => 0, 'calls' => 0, 'seconds' => 0.0, 'finished' => 0 ];
+
+        if ( get_transient( self::LOCK ) ) {
+            $result['message'] = 'Läuft bereits.';
+            $result['skipped'] = true;
+            return $result;
+        }
+        set_transient( self::LOCK, 1, 10 * MINUTE_IN_SECONDS );
 
         try {
+            self::ensure_tables();
             $result['calendars'] = $this->sync_calendars();
             $result['locations'] = $this->sync_locations();
-            $result['events']    = $this->sync_events();
-            $this->cleanup_old_events();
+            [ $result['events'], $result['new'], $result['deleted'] ] = $this->sync_events();
+            $result['deleted'] += $this->cleanup_old_events();
             update_option( 'evg_events_synced_at', current_time( 'mysql' ) );
-            $result['ok'] = true;
+            $result['ok']      = true;
+            $result['message'] = sprintf( '%d Termine (%d neu, %d entfernt), %d Kalender',
+                $result['events'], $result['new'], $result['deleted'], $result['calendars'] );
         } catch ( \Throwable $e ) {
-            $result['error'] = $e->getMessage();
+            $result['message'] = $e->getMessage();
             error_log( '[EVG Events Sync] Fehler: ' . $e->getMessage() );
+        } finally {
+            delete_transient( self::LOCK );
+        }
+
+        $result['calls']    = $this->calls;
+        $result['seconds']  = round( microtime( true ) - $t0, 1 );
+        $result['finished'] = time();
+        update_option( self::RESULT_OPTION, $result, false );
+
+        if ( ! $result['ok'] || $result['new'] || $result['deleted'] || $source !== 'cron' ) {
+            @file_put_contents( self::log_file(), sprintf( "[%s] %s | %s | %.1fs | %d Aufrufe | %s\n",
+                date( 'Y-m-d H:i:s' ), $result['ok'] ? 'OK' : 'FEHLER', $source,
+                $result['seconds'], $result['calls'], $result['message'] ), FILE_APPEND | LOCK_EX );
         }
 
         return $result;
+    }
+
+    public static function log_file( $ym = null ): string {
+        return evg_debug_dir() . '/termine-' . ( $ym ?: date( 'Ym' ) ) . '.log';
+    }
+
+    // ── Sichtbarkeit ─────────────────────────────────────────────────────────
+
+    /**
+     * SQL-Bedingung, welche Termine der Benutzer sehen darf. Erwartet die Aliase
+     * e (evg_events) und c (LEFT JOIN evg_calendars).
+     */
+    public static function visibility_sql( int $user_id ): string {
+        global $wpdb;
+        if ( $user_id && user_can( $user_id, 'manage_options' ) ) {
+            return '1=1';
+        }
+        $member_id = $user_id ? (string) get_user_meta( $user_id, 'evg_member_id', true ) : '';
+        if ( $member_id === '' ) {
+            return 'e.is_public = 1';
+        }
+
+        $parts  = [ 'e.is_public = 1', "COALESCE(c.allowed_groups, '') = ''" ];
+        foreach ( self::member_group_ids( $user_id, $member_id ) as $gid ) {
+            $parts[] = $wpdb->prepare( 'FIND_IN_SET(%s, c.allowed_groups)', $gid );
+        }
+        return '(' . implode( ' OR ', $parts ) . ')';
+    }
+
+    /**
+     * Gruppen des Mitglieds – live aus den synchronisierten Mitgliedsdaten (aktuell
+     * nach dem stündlichen Delta-Sync) plus am WP-Benutzer zugeteilte Gruppen.
+     *
+     * @return string[]
+     */
+    public static function member_group_ids( int $user_id, string $member_id ): array {
+        global $wpdb;
+        $ids = array_map( 'strval', (array) get_user_meta( $user_id, 'evg_groups', true ) );
+        $tbl = $wpdb->prefix . EVG_Plugin::live_table_prefix() . '_member_groups';
+        $ids = array_merge( $ids, (array) $wpdb->get_col( $wpdb->prepare(
+            "SELECT group_id FROM {$tbl} WHERE member_id = %s", $member_id
+        ) ) );
+        return array_values( array_unique( array_filter( $ids, 'ctype_digit' ) ) );
     }
 
     // ── Kalender ─────────────────────────────────────────────────────────────
@@ -129,9 +220,10 @@ class EVG_Events_Sync {
                     'name'       => substr( (string)( $cal['name']  ?? '' ), 0, 200 ),
                     'color'      => substr( (string)( $cal['color'] ?? '' ), 0, 7 ),
                     'short_code' => substr( (string)( $cal['short'] ?? '' ), 0, 4 ),
+                    'allowed_groups' => $this->id_list( $cal['allowed_groups'] ?? $cal['allowedGroups'] ?? [] ),
                     'synced_at'  => $now,
                 ],
-                [ '%d', '%s', '%s', '%s', '%s' ]
+                [ '%d', '%s', '%s', '%s', '%s', '%s' ]
             );
             $count++;
         }
@@ -178,22 +270,19 @@ class EVG_Events_Sync {
 
     // ── Events ────────────────────────────────────────────────────────────────
 
-    private function sync_events(): int {
+    /** @return int[] [Anzahl, neu, entfernt] */
+    private function sync_events(): array {
         global $wpdb;
 
-        // Zeitfenster: 7 Tage zurück bis 12 Monate voraus (UTC mit „Z“, sonst wertet die API als Ortszeit)
-        $from_ts = strtotime( '-7 days' );
+        // Zeitfenster: 30 Tage zurück bis 12 Monate voraus (UTC mit „Z“, sonst wertet die API als Ortszeit)
+        $from_ts = strtotime( '-' . self::DAYS_BACK . ' days' );
         $to_ts   = strtotime( '+12 months' );
 
         $path = '/api/v3.0/event?limit=100&ordering=start'
               . '&start__gte=' . rawurlencode( gmdate( 'Y-m-d\TH:i:s\Z', $from_ts ) )
               . '&start__lte=' . rawurlencode( gmdate( 'Y-m-d\TH:i:s\Z', $to_ts ) );
 
-        // Nur öffentliche Termine, wenn Option gesetzt
-        if ( (int) get_option( 'evg_events_public_only', 1 ) ) {
-            $path .= '&is_public=true';
-        }
-
+        // Alle Termine holen – wer was sieht, entscheidet visibility_sql(). Raumreservierungen bleiben draußen.
         // Kalender-Filter wenn konfiguriert (kommaseparierte Kalender-IDs)
         $cal_filter = trim( (string) get_option( 'evg_events_calendar_filter', '' ) );
         if ( $cal_filter !== '' ) {
@@ -203,6 +292,11 @@ class EVG_Events_Sync {
         $items = $this->fetch_all_pages( $path );
         $now   = current_time( 'mysql' );
         $count = 0;
+        $table      = $wpdb->prefix . 'evg_events';
+        $from_local = wp_date( 'Y-m-d H:i:s', $from_ts );
+        $to_local   = wp_date( 'Y-m-d H:i:s', $to_ts );
+        $known      = array_flip( array_map( 'intval', (array) $wpdb->get_col( "SELECT id FROM {$table}" ) ) );
+        $new        = 0;
 
         // Kalender/Location-Cache für Joins
         $calendars = $this->load_calendar_cache();
@@ -212,6 +306,7 @@ class EVG_Events_Sync {
         foreach ( $items as $ev ) {
             $id = (int)( $ev['id'] ?? 0 );
             if ( ! $id ) continue;
+            if ( ! empty( $ev['is_reservation'] ?? $ev['isReservation'] ?? false ) ) continue;
 
             // Datumsfelder normalisieren (EV gibt ISO 8601 zurück)
             $start_dt = $this->parse_dt( (string)( $ev['start'] ?? '' ) );
@@ -253,6 +348,7 @@ class EVG_Events_Sync {
                     'location_id'         => $loc_id,
                     'location_name'       => substr( $loc_name, 0, 500 ),
                     'calendar_id'         => $cal_id,
+                    'series_id'           => $this->extract_id( $ev['interval'] ?? null ),
                     'is_public'           => (int)(bool)( $ev['is_public']      ?? $ev['isPublic']       ?? true ),
                     'canceled'            => (int)(bool)( $ev['canceled']       ?? false ),
                     'is_reservation'      => (int)(bool)( $ev['is_reservation'] ?? $ev['isReservation']  ?? false ),
@@ -261,27 +357,25 @@ class EVG_Events_Sync {
                     'participation_start' => $part_start,
                     'participation_end'   => $part_end,
                     'access_level'        => (int)( $ev['access'] ?? 1 ),
-                    'raw_json'            => wp_json_encode( $ev, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ),
                     'synced_at'           => $now,
                 ],
                 [
                     '%d', '%s', '%s', '%s', '%s', '%d',
-                    '%d', '%s', '%d', '%d', '%d', '%d',
-                    '%d', '%d', '%s', '%s', '%d', '%s', '%s',
+                    '%d', '%s', '%d', '%d', '%d', '%d', '%d',
+                    '%d', '%d', '%s', '%s', '%d', '%s',
                 ]
             );
+            if ( ! isset( $known[ $id ] ) ) $new++;
             $seen[] = $id;
             $count++;
         }
 
         // Termine im Fenster, die die API nicht mehr liefert, entfernen
-        $from_local = wp_date( 'Y-m-d H:i:s', $from_ts );
-        $to_local   = wp_date( 'Y-m-d H:i:s', $to_ts );
-        $table      = $wpdb->prefix . 'evg_events';
+        $deleted = 0;
         if ( $seen ) {
             $ph = implode( ',', array_fill( 0, count( $seen ), '%d' ) );
             // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-            $wpdb->query( $wpdb->prepare(
+            $deleted = (int) $wpdb->query( $wpdb->prepare(
                 "DELETE FROM {$table} WHERE start_dt BETWEEN %s AND %s AND id NOT IN ($ph)",
                 array_merge( [ $from_local, $to_local ], $seen )
             ) );
@@ -289,11 +383,11 @@ class EVG_Events_Sync {
             // Leere Antwort: nur leeren, wenn lokal ohnehin kaum etwas steht (Schutz vor API-Aussetzern)
             $local = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE start_dt BETWEEN %s AND %s", $from_local, $to_local ) );
             if ( $local <= 5 ) {
-                $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE start_dt BETWEEN %s AND %s", $from_local, $to_local ) );
+                $deleted = (int) $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE start_dt BETWEEN %s AND %s", $from_local, $to_local ) );
             }
         }
 
-        return $count;
+        return [ $count, $new, $deleted ];
     }
 
     /** Entfernt Kalender/Orte, die die API nicht mehr liefert (nur bei nicht-leerer Liste). */
@@ -305,15 +399,25 @@ class EVG_Events_Sync {
         $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->prefix}{$suffix} WHERE id NOT IN ($ph)", $ids ) );
     }
 
+    /** FK-Liste (URLs/IDs/Objekte) → "12,34" */
+    private function id_list( $refs ): string {
+        $ids = [];
+        foreach ( (array) $refs as $r ) {
+            $id = is_array( $r ) ? $this->extract_id( $r['id'] ?? null ) : $this->extract_id( $r );
+            if ( $id ) $ids[] = $id;
+        }
+        return implode( ',', array_unique( $ids ) );
+    }
+
     private function int_or_null( $v ): ?int {
         return ( $v === null || $v === '' ) ? null : (int) $v;
     }
 
-    /** Löscht Events die älter als 7 Tage sind. */
-    private function cleanup_old_events(): void {
+    /** Löscht Termine vor dem Zeitfenster. */
+    private function cleanup_old_events(): int {
         global $wpdb;
-        $cutoff = wp_date( 'Y-m-d H:i:s', strtotime( '-7 days' ) );
-        $wpdb->query( $wpdb->prepare(
+        $cutoff = wp_date( 'Y-m-d H:i:s', strtotime( '-' . self::DAYS_BACK . ' days' ) );
+        return (int) $wpdb->query( $wpdb->prepare(
             "DELETE FROM {$wpdb->prefix}evg_events WHERE start_dt < %s",
             $cutoff
         ) );
@@ -330,6 +434,7 @@ class EVG_Events_Sync {
 
         while ( $url && $pages < 200 ) {
             $pages++;
+            $this->calls++;
             $resp = evg_http_get( $url, $headers );
 
             if ( is_wp_error( $resp ) ) {

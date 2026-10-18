@@ -6,11 +6,11 @@
  *
  * Liest Termine aus wp_evg_events + wp_evg_calendars und rendert
  * ein interaktives Monats-Grid im Frontend.
- * Read-Only – kein Login erforderlich (zeigt standardmäßig nur is_public=1).
+ * Read-Only. Gäste sehen öffentliche Termine, angemeldete Mitglieder zusätzlich
+ * die für sie freigegebenen (Regeln: EVG_Events_Sync::visibility_sql()).
  *
  * Attribute:
  *   calendars   – kommagetrennte Kalender-IDs (Standard: alle)
- *   public_only – 1 (Standard) | 0  → auch nicht-öffentliche anzeigen (nur für eingeloggte Nutzer)
  *   title       – optionaler Überschriften-Text über dem Kalender
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -47,7 +47,6 @@ class EVG_Calendar_Widget {
     public function shortcode( $atts = [] ): string {
         $atts = shortcode_atts( [
             'calendars'   => '',
-            'public_only' => '1',
             'title'       => '',
         ], $atts, 'evg_calendar' );
 
@@ -59,7 +58,6 @@ class EVG_Calendar_Widget {
         wp_localize_script( 'evg-calendar', 'EVG_CAL', [
             'ajax'       => admin_url( 'admin-ajax.php' ),
             'nonce'      => wp_create_nonce( 'evg_cal_nonce' ),
-            'publicOnly' => (int) $atts['public_only'],
         ] );
 
         $title_html = $atts['title']
@@ -95,12 +93,7 @@ class EVG_Calendar_Widget {
         $cal_ids_raw = isset( $_POST['calendars'] ) ? sanitize_text_field( wp_unslash( $_POST['calendars'] ) ) : '';
         $cal_ids     = array_values( array_filter( array_map( 'intval', explode( ',', $cal_ids_raw ) ) ) );
 
-        // Nicht-öffentliche Termine nur für eingeloggte Nutzer – der Request-Parameter allein genügt nicht
-        $public_only = isset( $_POST['publicOnly'] ) ? (int) $_POST['publicOnly'] : 1;
-        if ( ! is_user_logged_in() ) {
-            $public_only = 1;
-        }
-        $public_sql  = $public_only ? ' AND e.is_public = 1' : '';
+        $visible_sql = ' AND ' . EVG_Events_Sync::visibility_sql( get_current_user_id() );
 
         $cal_filter_sql = '';
         if ( ! empty( $cal_ids ) ) {
@@ -119,7 +112,7 @@ class EVG_Calendar_Widget {
              WHERE e.start_dt >= %s
                AND e.start_dt <= %s
                AND e.canceled = 0"
-            . $public_sql
+            . $visible_sql
             . $cal_filter_sql
             . " ORDER BY e.start_dt ASC",
             $from,

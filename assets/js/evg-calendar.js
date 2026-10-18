@@ -167,8 +167,7 @@
                 nonce:     EVG_CAL.nonce,
                 year:      this.year,
                 month:     this.month,
-                calendars: this.calFilter,
-                publicOnly: EVG_CAL.publicOnly
+                calendars: this.calFilter
             },
             function (resp) {
                 if (resp && resp.success) {

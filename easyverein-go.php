@@ -584,13 +584,18 @@ class EVG_Plugin {
         }
     }
 
-    /** WP-Cron-Callback für den Events-Sync */
+    /** WP-Cron-Callback für den Termin-Sync (alle 15 Minuten) */
     public function run_events_sync_cron(): void {
-        $sync   = new EVG_Events_Sync();
-        $result = $sync->run();
+        $result = ( new EVG_Events_Sync() )->run( 'cron' );
         if ( (int) get_option('evg_debug', 0) ) {
             error_log( '[EVG Events Sync] ' . wp_json_encode( $result ) );
         }
+    }
+
+    /** Für System-Cron/Test: wp eval 'EVG_Plugin::get_instance()->run_events_sync_cli();' --path=… */
+    public function run_events_sync_cli(): void {
+        $res = ( new EVG_Events_Sync() )->run( 'cli' );
+        echo '[EVG Termine] '.($res['ok'] ? 'OK' : 'FEHLER').': '.$res['message'].sprintf(' (%.1f s, %d Aufrufe)', $res['seconds'], $res['calls'])."\n";
     }
     private function append_nightly_log($log_file, $message){
         $dir = dirname($log_file);

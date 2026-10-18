@@ -68,13 +68,30 @@ Der Shortcode `[easyverein_table]` rendert synchronisierte Mitglieder als sortie
 
 Der Shortcode `[evg_calendar]` rendert einen interaktiven Monats-Kalender aus den synchronisierten EasyVerein-Terminen:
 
-- **Read-Only** – zeigt standardmäßig nur öffentliche Termine (`is_public = 1`)
+- **Read-Only** – Gäste sehen öffentliche Termine, angemeldete Mitglieder zusätzlich die für sie freigegebenen (siehe *Termin-Sync und Sichtbarkeit*)
 - **Monat-Navigation** mit Prev/Next-Tasten
 - **Farbige Event-Punkte** pro Tag (Farbe = Kalender-Farbe aus EasyVerein)
 - **Tages-Popup** beim Klick auf einen Tag mit Terminen (Zeit + Termin-Name)
 - **Detail-Modal** beim Klick auf einen Termin (Titel, Kalender, Uhrzeit, Ort, Beschreibung)
 - **Kalender-Legende** mit Farbzuordnung unterhalb des Grids
 - Responsiv (mobile-gerecht), kein Login erforderlich
+
+### Termin-Sync und Sichtbarkeit
+
+Der Termin-Sync läuft alle 15 Minuten per WP-Cron und holt Kalender, Orte und **alle** Termine (30 Tage zurück bis 12 Monate voraus, ohne Raumreservierungen) – rund 9 API-Aufrufe pro Lauf. Termine, die easyVerein nicht mehr liefert, werden entfernt. Ein Delta über `updated_at` lohnt hier nicht, weil gelöschte Termine nur über die vollständige Liste erkennbar sind.
+
+Wer welchen Termin sieht (Website-Kalender und App-Endpunkt `/events` gleichermaßen, `EVG_Events_Sync::visibility_sql()`):
+
+| Termin | Sichtbar für |
+|---|---|
+| in easyVerein **öffentlich** | alle, auch Gäste |
+| Kalender hat in easyVerein **„Sichtbar für Gruppen“** gesetzt | angemeldete Mitglieder in einer dieser Gruppen |
+| sonst (nicht öffentlich, Kalender ohne Gruppen oder kein Kalender) | alle angemeldeten Mitglieder |
+| alles | Administratoren |
+
+„Angemeldetes Mitglied“ heißt: WP-Benutzer mit `evg_member_id` (Login über „Mein Verein“). Die Gruppen werden bei jedem Aufruf aus den synchronisierten Mitgliedsdaten gelesen, Änderungen in easyVerein greifen also nach dem nächsten Delta-Sync.
+
+Im Backend (Manueller Sync) zeigt die Lauf-Übersicht den letzten Termin-Sync; „Termine jetzt holen“ startet ihn sofort. Läufe mit Fehlern, Änderungen oder manuellem Start landen in `wp-content/easyverein-debug/termine-JJJJMM.log`. Per CLI: `wp eval 'EVG_Plugin::get_instance()->run_events_sync_cli();'`.
 - AJAX-basiertes Laden pro Monat mit clientseitigem Cache (kein erneutes Laden beim Navigieren)
 
 ### Benutzerbezogene Gruppenfreigabe
@@ -153,7 +170,7 @@ Wird `columns` weggelassen, werden die in `EVG_Frontend::DEFAULT_COLUMNS` hinter
 ```
 [evg_calendar]
 [evg_calendar title="Vereinstermine"]
-[evg_calendar calendars="12,34" public_only="1"]
+[evg_calendar calendars="12,34"]
 ```
 
 ### Parameter
@@ -162,16 +179,15 @@ Wird `columns` weggelassen, werden die in `EVG_Frontend::DEFAULT_COLUMNS` hinter
 |---|---|---|---|
 | `title` | string | *(leer)* | Überschrift über dem Kalender |
 | `calendars` | string | *(alle)* | Kommagetrennte Kalender-IDs (aus EasyVerein) zur Filterung |
-| `public_only` | int | `1` | `1` = nur öffentliche Termine · `0` = alle Termine anzeigen |
 
 ### Beispiele
 
 ```
 [evg_calendar title="Termine im Mai"]
-[evg_calendar calendars="5,12" public_only="1"]
+[evg_calendar calendars="5,12"]
 ```
 
-Der Kalender kann auf beliebigen Seiten und Beiträgen eingebettet werden. Er benötigt keinen eingeloggten Benutzer.
+Der Kalender kann auf beliebigen Seiten und Beiträgen eingebettet werden. Er benötigt keinen eingeloggten Benutzer; angemeldete Mitglieder sehen zusätzlich ihre freigegebenen Termine.
 
 ---
 

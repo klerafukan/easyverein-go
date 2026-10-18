@@ -12,6 +12,7 @@ class EVG_Admin {
         add_action('wp_ajax_evg_table_swap',  [$this,'ajax_table_swap']);
         add_action('wp_ajax_evg_swap_delta',  [$this,'ajax_swap_delta']);
         add_action('wp_ajax_evg_delta_sync',  [$this,'ajax_delta_sync']);
+        add_action('wp_ajax_evg_events_sync', [$this,'ajax_events_sync']);
 
         add_action('show_user_profile', [$this,'user_groups_fields']);
         add_action('edit_user_profile',  [$this,'user_groups_fields']);
@@ -231,6 +232,7 @@ class EVG_Admin {
                     <button id="evg-sync-quick10" class="button"><?php echo esc_html__('Nur 10 Mitglieder testen','ev-groups'); ?></button>
                     <button id="evg-sync-stop" class="button" style="display:none;color:#dc2626;border-color:#dc2626"><?php echo esc_html__('Stop','ev-groups'); ?></button>
                     <button id="evg-delta-run" class="button"><?php echo esc_html__('Nur Änderungen holen (Delta)','ev-groups'); ?></button>
+                    <button id="evg-events-run" class="button"><?php echo esc_html__('Termine jetzt holen','ev-groups'); ?></button>
                     <button id="evg-test-conn" class="button"><?php echo esc_html__('Verbindung testen','ev-groups'); ?></button>
                     <span id="evg-test-conn-out" style="margin-left:8px;opacity:.8"></span>
                 </p>
@@ -562,6 +564,16 @@ class EVG_Admin {
                   .always(function(){ btn.disabled = false; });
             };
 
+            document.getElementById('evg-events-run').onclick = function(e) {
+                e.preventDefault();
+                var btn = this; btn.disabled = true;
+                tOut.textContent = 'Termin-Sync läuft…';
+                jQuery.post(ajax, {action:'evg_events_sync', _wpnonce:n1}, function(r) {
+                    tOut.textContent = (r && r.data && r.data.message) ? r.data.message : (r && r.success ? 'OK' : 'Fehler');
+                }).fail(function(xhr) { tOut.textContent = 'Netzwerkfehler (Status: ' + xhr.status + ')'; })
+                  .always(function(){ btn.disabled = false; });
+            };
+
             document.getElementById('evg-sync-start').onclick    = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix); };
             document.getElementById('evg-sync-quick10').onclick   = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix, 10); };
             document.getElementById('evg-nightly-sim').onclick    = function(e) { e.preventDefault(); nightlySync(EVGAdmin.nightlyPrefix); };
@@ -854,6 +866,7 @@ class EVG_Admin {
         $full_ts = $full ? strtotime($full.' UTC') : 0;
         $res = get_option(EVG_Sync::delta_result_option(EVG_Plugin::live_table_prefix()), []);
         $next = self::nightly_delta_next();
+        $ev   = get_option(EVG_Events_Sync::RESULT_OPTION, []);
 
         $rows = [
             [__('Letzter Komplett-Sync','ev-groups'), $fmt($full_ts)],
@@ -861,6 +874,10 @@ class EVG_Admin {
                 ? $fmt($res['finished']).' – '.(!empty($res['ok']) ? 'OK' : __('FEHLER','ev-groups')).': '.($res['message'] ?? '')
                 : '–'],
             [__('Nächster Delta-Sync','ev-groups'), $fmt($next)],
+            [__('Letzter Termin-Sync','ev-groups'), is_array($ev) && !empty($ev['finished'])
+                ? $fmt($ev['finished']).' – '.(!empty($ev['ok']) ? 'OK' : __('FEHLER','ev-groups')).': '.($ev['message'] ?? '')
+                  .' – '.__('läuft alle 15 Minuten','ev-groups')
+                : '–'],
         ];
         $html = '<table class="widefat striped" style="margin:8px 0;max-width:900px"><tbody>';
         foreach ($rows as $r) {
@@ -876,6 +893,19 @@ class EVG_Admin {
         }
         if ($lines) {
             $html .= '<details><summary>'.esc_html__('Letzte Delta-Läufe','ev-groups').'</summary>'
+                  .'<pre style="max-height:200px;overflow:auto;background:#f6f7f7;padding:8px;font-size:12px">'
+                  .esc_html(implode("\n", array_reverse(array_slice($lines, -24))))
+                  .'</pre></details>';
+        }
+
+        // Termin-Log: Fehler, Änderungen und manuelle Läufe
+        $lines = [];
+        foreach ([date('Ym', strtotime('first day of last month')), date('Ym')] as $ym) {
+            $f = EVG_Events_Sync::log_file($ym);
+            if (is_readable($f)) $lines = array_merge($lines, file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
+        }
+        if ($lines) {
+            $html .= '<details><summary>'.esc_html__('Letzte Termin-Läufe mit Änderungen','ev-groups').'</summary>'
                   .'<pre style="max-height:200px;overflow:auto;background:#f6f7f7;padding:8px;font-size:12px">'
                   .esc_html(implode("\n", array_reverse(array_slice($lines, -24))))
                   .'</pre></details>';
@@ -898,6 +928,15 @@ class EVG_Admin {
             esc_html__('Aufrufe','ev-groups'),
             $next ? ' – '.esc_html__('nächster:','ev-groups').' '.esc_html(wp_date('d.m. H:i', $next)) : ''
         );
+    }
+
+    public function ajax_events_sync(){
+        check_ajax_referer('evg_sync');
+        if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+        $res = ( new EVG_Events_Sync() )->run('manual');
+        $msg = $res['message'].sprintf(' (%.1f s, %d Aufrufe)', $res['seconds'], $res['calls']);
+        if ($res['ok']) wp_send_json_success(['message'=>$msg]);
+        wp_send_json_error(['message'=>$msg]);
     }
 
     public function ajax_delta_sync(){

@@ -268,7 +268,8 @@ class EVG_Api {
         if ( $from === '' ) $from = current_time('Y-m-d') . ' 00:00:00';
         if ( $to   === '' ) $to   = wp_date('Y-m-d H:i:s', strtotime('+12 months'));
 
-        $where   = 'WHERE e.start_dt >= %s AND e.start_dt <= %s AND e.is_reservation = 0';
+        $where   = 'WHERE e.start_dt >= %s AND e.start_dt <= %s AND e.is_reservation = 0 AND '
+                 . EVG_Events_Sync::visibility_sql( get_current_user_id() );
         $params  = [ $from, $to ];
 
         if ( $calendar !== '' ) {
@@ -281,7 +282,8 @@ class EVG_Api {
             }
         }
 
-        $sql_count  = $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}evg_events e {$where}", ...$params );
+        $sql_count  = $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}evg_events e
+             LEFT JOIN {$wpdb->prefix}evg_calendars c ON c.id = e.calendar_id {$where}", ...$params );
         $total      = (int) $wpdb->get_var( $sql_count );
 
         $params[]   = $limit;
@@ -318,7 +320,7 @@ class EVG_Api {
              FROM {$wpdb->prefix}evg_events e
              LEFT JOIN {$wpdb->prefix}evg_calendars c ON c.id = e.calendar_id
              LEFT JOIN {$wpdb->prefix}evg_locations l ON l.id = e.location_id
-             WHERE e.id = %d",
+             WHERE e.id = %d AND " . EVG_Events_Sync::visibility_sql( get_current_user_id() ),
             $id
         ), ARRAY_A );
 
