@@ -10,9 +10,9 @@
 #   crontab -e  →  Zeile oben einfügen
 
 PHP=/usr/bin/php84
-WP_CLI=~/bin/wp
-WP_PATH=~/public_html/staging
-LOG_DIR=~/public_html/staging/wp-content/easyverein-debug
+WP_CLI=/usr/home/tvwmie/bin/wp
+WP_PATH=/usr/home/tvwmie/public_html/live
+LOG_DIR=/usr/home/tvwmie/public_html/live/wp-content/easyverein-debug
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] EVG nightly-sync gestartet (CLI)"
 
