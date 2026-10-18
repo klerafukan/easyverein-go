@@ -1,14 +1,28 @@
 name: Deploy to WordPress
 
+# Push auf main → Versions-Bump + Deploy auf die Testseite (staging.tv-miesbach.de).
+# Live (tv-miesbach.de) nur manuell: Actions → "Deploy to WordPress" → "Run workflow".
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Ziel'
+        type: choice
+        options: [live, test]
+        default: live
+
+concurrency:
+  group: deploy-${{ github.event_name == 'push' && 'test' || inputs.target }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TARGET: ${{ github.event_name == 'push' && 'test' || inputs.target }}
 
     steps:
       - name: Checkout
@@ -17,6 +31,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bump patch version
+        if: github.event_name == 'push'
         id: bump
         run: |
           CURRENT=$(grep "define('EVG_VERSION'" easyverein-go.php | grep -oP "'\K[0-9]+\.[0-9]+\.[0-9]+")
@@ -30,6 +45,7 @@ jobs:
           echo "version=$NEW" >> $GITHUB_OUTPUT
 
       - name: Commit version bump
+        if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -37,12 +53,24 @@ jobs:
           git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
           git push
 
+      - name: Zielpfad bestimmen
+        id: target
+        env:
+          PATH_LIVE: ${{ secrets.REMOTE_PATH }}
+          PATH_TEST: ${{ secrets.REMOTE_PATH_TEST }}
+        run: |
+          if [ "$TARGET" = "live" ]; then P="$PATH_LIVE"; else P="$PATH_TEST"; fi
+          if [ -z "$P" ]; then echo "::error::Kein Zielpfad für '$TARGET' hinterlegt (Secret REMOTE_PATH bzw. REMOTE_PATH_TEST)"; exit 1; fi
+          echo "path=$P" >> $GITHUB_OUTPUT
+          echo "Deploy von $(grep -oP "define\('EVG_VERSION','\K[^']+" easyverein-go.php) nach $TARGET" >> $GITHUB_STEP_SUMMARY
+
+      # Ohne --mkpath: Ein falscher/veralteter Pfad soll fehlschlagen statt still einen neuen Ordner anzulegen.
       - name: Deploy via rsync
         uses: burnett01/rsync-deployments@7.0.1
         with:
-          switches: -avz --mkpath --delete --exclude='.git' --exclude='.github' --exclude='*.md' --exclude='debug-sync.php'
+          switches: -avz --delete --exclude='.git' --exclude='.github' --exclude='*.md' --exclude='debug-sync.php'
           path: ./
-          remote_path: ${{ secrets.REMOTE_PATH }}
+          remote_path: ${{ steps.target.outputs.path }}
           remote_host: ${{ secrets.SSH_HOST }}
           remote_user: ${{ secrets.SSH_USER }}
           remote_key: ${{ secrets.SSH_KEY }}
