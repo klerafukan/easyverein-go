@@ -1086,7 +1086,7 @@ class EVG_Sync {
         self::set_delta_since($this->table_prefix,$run_start);
         update_option('evg_last_delta_sync',current_time('mysql',1),false);
 
-        $msg = sprintf('OK: %d Mitglieder (%d geändert, %d neu, %d gelöscht), %d Kontaktdaten, Gruppen +%d/−%d, Zusatzfelder %d geschrieben/%d entfernt',
+        $msg = sprintf('%d Mitglieder (%d geändert, %d neu, %d gelöscht), %d Kontaktdaten, Gruppen +%d/−%d, Zusatzfelder %d geschrieben/%d entfernt',
             $stats['members_total'],$stats['members_changed'],$stats['members_new'],$stats['members_deleted'],
             $stats['contacts_updated'],$stats['group_assignments_added'],$stats['group_assignments_removed'],
             $cf_written,$cf_cleared);
