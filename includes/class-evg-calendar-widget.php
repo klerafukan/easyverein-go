@@ -12,6 +12,12 @@
  * Attribute:
  *   calendars   – kommagetrennte Kalender-IDs (Standard: alle)
  *   title       – optionaler Überschriften-Text über dem Kalender
+ *   compact     – 1 = kleine Monatsansicht ohne Rahmen, z. B. für den Footer
+ *   more        – URL für den Link „Alle Termine“ unter dem Kalender
+ *   more_label  – Linktext (Standard: „Alle Termine“)
+ *
+ * Zusätzlich gibt es das Widget „Termine (easyVerein)“ (EVG_Calendar_WP_Widget),
+ * das den Kalender kompakt in einen Widget-Bereich (z. B. Footer) setzt.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -22,6 +28,7 @@ class EVG_Calendar_Widget {
         add_action( 'wp_enqueue_scripts', [ $this, 'register_assets' ] );
         add_action( 'wp_ajax_evg_calendar_events',        [ $this, 'ajax_get_events' ] );
         add_action( 'wp_ajax_nopriv_evg_calendar_events', [ $this, 'ajax_get_events' ] );
+        add_action( 'widgets_init', function () { register_widget( 'EVG_Calendar_WP_Widget' ); } );
     }
 
     // ── Assets ───────────────────────────────────────────────────────────────
@@ -48,6 +55,9 @@ class EVG_Calendar_Widget {
         $atts = shortcode_atts( [
             'calendars'   => '',
             'title'       => '',
+            'compact'     => '0',
+            'more'        => '',
+            'more_label'  => __( 'Alle Termine', 'ev-groups' ),
         ], $atts, 'evg_calendar' );
 
         wp_enqueue_style( 'evg-calendar' );
@@ -65,9 +75,16 @@ class EVG_Calendar_Widget {
             : '';
 
         $calendars_attr = esc_attr( sanitize_text_field( $atts['calendars'] ) );
+        $compact        = (int) $atts['compact'] === 1;
+
+        $more_html = $atts['more'] !== ''
+            ? '<a class="evg-cal-more-link" href="' . esc_url( $atts['more'] ) . '">' . esc_html( $atts['more_label'] ) . ' →</a>'
+            : '';
 
         return $title_html
-            . '<div class="evg-calendar-widget" data-calendars="' . $calendars_attr . '"></div>';
+            . '<div class="evg-calendar-widget' . ( $compact ? ' evg-cal--compact' : '' ) . '" data-calendars="' . $calendars_attr . '"'
+            . ( $compact ? ' data-compact="1"' : '' ) . '></div>'
+            . $more_html;
     }
 
     // ── AJAX ─────────────────────────────────────────────────────────────────
@@ -179,5 +196,64 @@ class EVG_Calendar_Widget {
     /** Nur gültige Hex-Farben durchlassen (landen im style-Attribut). */
     private function color( string $c ): string {
         return preg_match( '/^#[0-9a-f]{3,6}$/i', $c ) ? $c : '#83c324';
+    }
+}
+
+/**
+ * Widget „Termine (easyVerein)“ – kompakter Monatskalender mit Badges für
+ * Widget-Bereiche wie den Footer. Ersetzt das WordPress-Kalender-Widget (Beiträge).
+ */
+class EVG_Calendar_WP_Widget extends WP_Widget {
+
+    public function __construct() {
+        parent::__construct( 'evg_calendar_widget', __( 'Termine (easyVerein)', 'ev-groups' ), [
+            'description' => __( 'Kompakter Termin-Kalender aus easyVerein mit Kalender-Badges.', 'ev-groups' ),
+        ] );
+    }
+
+    public function widget( $args, $instance ) {
+        $title = apply_filters( 'widget_title', $instance['title'] ?? '', $instance, $this->id_base );
+        $atts  = [
+            'compact'   => '1',
+            'calendars' => $instance['calendars'] ?? '',
+            'more'      => $instance['more'] ?? '',
+        ];
+        $sc = '[evg_calendar';
+        foreach ( $atts as $k => $v ) {
+            $sc .= ' ' . $k . '="' . esc_attr( $v ) . '"';
+        }
+        $sc .= ']';
+
+        echo $args['before_widget']; // phpcs:ignore WordPress.Security.EscapeOutput
+        if ( $title !== '' ) {
+            echo $args['before_title'] . esc_html( $title ) . $args['after_title']; // phpcs:ignore WordPress.Security.EscapeOutput
+        }
+        echo do_shortcode( $sc ); // phpcs:ignore WordPress.Security.EscapeOutput
+        echo $args['after_widget']; // phpcs:ignore WordPress.Security.EscapeOutput
+    }
+
+    public function form( $instance ) {
+        $fields = [
+            'title'     => __( 'Titel', 'ev-groups' ),
+            'more'      => __( 'Link „Alle Termine“ (URL der Kalenderseite)', 'ev-groups' ),
+            'calendars' => __( 'Nur diese Kalender-IDs (kommagetrennt, leer = alle)', 'ev-groups' ),
+        ];
+        foreach ( $fields as $key => $label ) {
+            printf(
+                '<p><label for="%1$s">%2$s</label><input class="widefat" id="%1$s" name="%3$s" type="text" value="%4$s"></p>',
+                esc_attr( $this->get_field_id( $key ) ),
+                esc_html( $label ),
+                esc_attr( $this->get_field_name( $key ) ),
+                esc_attr( $instance[ $key ] ?? '' )
+            );
+        }
+    }
+
+    public function update( $new_instance, $old_instance ) {
+        return [
+            'title'     => sanitize_text_field( $new_instance['title'] ?? '' ),
+            'more'      => esc_url_raw( $new_instance['more'] ?? '' ),
+            'calendars' => preg_replace( '/[^0-9,]/', '', (string) ( $new_instance['calendars'] ?? '' ) ),
+        ];
     }
 }

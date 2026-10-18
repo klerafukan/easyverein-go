@@ -135,7 +135,8 @@
         this.hidden      = {};
         var self0 = this;
         (store.get(this.storeKey) || '').split(',').forEach(function (id) { if (id !== '') { self0.hidden[id] = true; } });
-        this.view        = store.get('evg_cal_view') || (this.$el.width() < 560 ? 'list' : 'month');
+        this.compact     = this.$el.data('compact') === 1 || this.$el.data('compact') === '1';
+        this.view        = this.compact ? 'month' : (store.get('evg_cal_view') || (this.$el.width() < 560 ? 'list' : 'month'));
         this.$popup      = null;
         this.$modal      = null;
         this._build();
@@ -148,8 +149,13 @@
         var self = this;
 
         var weekdayHtml = WEEKDAYS_DE.map(function (d) {
-            return '<span>' + d + '</span>';
+            return '<span>' + (self.compact ? d.charAt(0) : d) + '</span>';
         }).join('');
+        var viewsHtml = this.compact ? '' :
+            '<div class="evg-cal-views" role="group" aria-label="Ansicht">' +
+                '<button type="button" data-view="month">Monat</button>' +
+                '<button type="button" data-view="list">Liste</button>' +
+            '</div>';
 
         this.$el.html(
             '<div class="evg-cal-header">' +
@@ -159,10 +165,7 @@
             '</div>' +
             '<div class="evg-cal-toolbar">' +
                 '<div class="evg-cal-badges" role="group" aria-label="Kalender ein- und ausblenden"></div>' +
-                '<div class="evg-cal-views" role="group" aria-label="Ansicht">' +
-                    '<button type="button" data-view="month">Monat</button>' +
-                    '<button type="button" data-view="list">Liste</button>' +
-                '</div>' +
+                viewsHtml +
             '</div>' +
             '<div class="evg-cal-weekdays">' + weekdayHtml + '</div>' +
             '<div class="evg-cal-grid evg-cal-loading"></div>' +
@@ -431,14 +434,17 @@
     EvgCalendar.prototype._showPopup = function ($cell, events) {
         var self    = this;
         var dayNum  = parseInt($cell.data('day'), 10);
-        var dateStr = MONTHS_DE[this.month - 1].substring(0, 3) + '. ' + dayNum + '.';
+        var dateStr = longDay(new Date(this.year, this.month - 1, dayNum));
 
         var itemsHtml = events.map(function (ev) {
-            return '<li class="evg-cal-popup-item' + (ev.canceled ? ' is-canceled' : '') + '" data-evid="' + ev.id + '">' +
+            var meta = [ev.location_name, ev.calendar_name].filter(Boolean).join(' · ');
+            return '<li class="evg-cal-popup-item' + (ev.canceled ? ' is-canceled' : '') + '" data-evid="' + ev.id + '" tabindex="0">' +
                 '<span class="evg-cal-popup-dot" style="background:' + escHtml(ev.calendar_color) + ';"></span>' +
                 '<span class="evg-cal-popup-text">' +
                     '<span class="evg-cal-popup-time">' + escHtml(timeLabel(ev)) + (ev.canceled ? ' · abgesagt' : '') + '</span>' +
                     '<span class="evg-cal-popup-name">' + escHtml(ev.name) + '</span>' +
+                    (meta ? '<span class="evg-cal-popup-meta">' + escHtml(meta) + '</span>' : '') +
+                    (ev.description ? '<span class="evg-cal-popup-more">Details ›</span>' : '') +
                 '</span>' +
                 '</li>';
         }).join('');

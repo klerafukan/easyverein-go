@@ -672,3 +672,186 @@
         flex-basis: 76px;
     }
 }
+
+/* ── Popup: Details je Termin ───────────────────────────── */
+.evg-cal-popup {
+    width: 300px;
+}
+
+.evg-cal-popup-name {
+    white-space: normal;
+}
+
+.evg-cal-popup-meta {
+    font-size: 12px;
+    color:     var(--evg-cal-text-muted);
+}
+
+.evg-cal-popup-more {
+    font-size:   12px;
+    font-weight: 600;
+    color:       var(--evg-cal-accent-dk);
+    margin-top:  2px;
+}
+
+.evg-cal-popup-list {
+    max-height: 340px;
+}
+
+/* ── Kompakt (Footer-Widget): transparent, erbt Textfarbe ─ */
+.evg-calendar-widget.evg-cal--compact {
+    background:    transparent;
+    border:        none;
+    box-shadow:    none;
+    max-width:     320px;
+    margin:        0;
+    font-size:     12px;
+    color:         inherit;
+}
+
+.evg-cal--compact .evg-cal-header {
+    background: transparent;
+    padding:    0 0 8px;
+}
+
+.evg-cal--compact .evg-cal-title-month {
+    color:     inherit;
+    font-size: 13px;
+}
+
+.evg-cal--compact .evg-cal-prev,
+.evg-cal--compact .evg-cal-next {
+    width:        24px;
+    height:       24px;
+    line-height:  20px;
+    font-size:    16px;
+    color:        inherit;
+    border-color: currentColor;
+    opacity:      0.7;
+}
+
+.evg-cal--compact .evg-cal-prev:hover,
+.evg-cal--compact .evg-cal-next:hover {
+    opacity:    1;
+    background: rgba(255,255,255,0.12);
+}
+
+.evg-cal--compact .evg-cal-toolbar {
+    padding: 0 0 8px;
+    border:  none;
+}
+
+.evg-cal--compact .evg-cal-badges {
+    gap: 4px;
+}
+
+.evg-cal--compact .evg-cal-badge {
+    background: transparent;
+    color:      inherit;
+    font-size:  11px;
+    padding:    2px 8px;
+    gap:        5px;
+}
+
+.evg-cal--compact .evg-cal-badge.is-off {
+    border-color: rgba(255,255,255,0.25);
+}
+
+.evg-cal--compact .evg-cal-weekdays {
+    background: transparent;
+    border:     none;
+    padding:    0 0 2px;
+}
+
+.evg-cal--compact .evg-cal-weekdays span,
+.evg-cal--compact .evg-cal-weekdays span:nth-child(6),
+.evg-cal--compact .evg-cal-weekdays span:nth-child(7) {
+    color:   inherit;
+    opacity: 0.6;
+    font-size: 10px;
+    padding: 2px 0;
+}
+
+.evg-cal--compact .evg-cal-grid {
+    min-height: 0;
+}
+
+.evg-cal--compact .evg-cal-grid.evg-cal-loading::after {
+    background-color: transparent;
+}
+
+.evg-cal--compact .evg-cal-day,
+.evg-cal--compact .evg-cal-day--empty {
+    min-height:  34px;
+    padding:     2px 0;
+    border:      none;
+    background:  transparent;
+    align-items: center;
+    border-radius: 4px;
+}
+
+.evg-cal--compact .evg-cal-day--has-events:hover {
+    background: rgba(255,255,255,0.12);
+}
+
+.evg-cal--compact .evg-cal-day-num,
+.evg-cal--compact .evg-cal-day:nth-child(7n-1) .evg-cal-day-num,
+.evg-cal--compact .evg-cal-day:nth-child(7n) .evg-cal-day-num {
+    color:     inherit;
+    font-size: 12px;
+    width:     22px;
+    height:    22px;
+}
+
+.evg-cal--compact .evg-cal-day:nth-child(7n-1) .evg-cal-day-num,
+.evg-cal--compact .evg-cal-day:nth-child(7n) .evg-cal-day-num {
+    opacity: 0.7;
+}
+
+.evg-cal--compact .evg-cal-day--has-events .evg-cal-day-num {
+    font-weight: 700;
+}
+
+.evg-cal--compact .evg-cal-day--today .evg-cal-day-num {
+    color:   var(--evg-cal-today-text);
+    opacity: 1;
+}
+
+.evg-cal--compact .evg-cal-dots {
+    margin-top:      2px;
+    gap:             2px;
+    justify-content: center;
+}
+
+.evg-cal--compact .evg-cal-dot {
+    width:  5px;
+    height: 5px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.35);
+}
+
+.evg-cal--compact .evg-cal-more {
+    display: none;
+}
+
+.evg-cal--compact .evg-cal-bars {
+    width:  100%;
+    margin: 2px 0 0;
+}
+
+.evg-cal--compact .evg-cal-bar {
+    height: 3px;
+}
+
+.evg-cal-more-link {
+    display:     inline-block;
+    margin-top:  8px;
+    font-size:   13px;
+    font-weight: 700;
+    color:       inherit;
+    text-decoration: none;
+    border-bottom: 1px solid currentColor;
+}
+
+.evg-cal-more-link:hover {
+    opacity: 0.8;
+}

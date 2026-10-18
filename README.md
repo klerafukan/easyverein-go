@@ -181,13 +181,19 @@ Wird `columns` weggelassen, werden die in `EVG_Frontend::DEFAULT_COLUMNS` hinter
 |---|---|---|---|
 | `title` | string | *(leer)* | Überschrift über dem Kalender |
 | `calendars` | string | *(alle)* | Kommagetrennte Kalender-IDs (aus EasyVerein) zur Filterung |
+| `compact` | int | `0` | `1` = kompakte Monatsansicht ohne Rahmen (Footer) |
+| `more` | string | *(leer)* | URL für den Link „Alle Termine →“ unter dem Kalender |
+| `more_label` | string | `Alle Termine` | Linktext |
 
 ### Beispiele
 
 ```
 [evg_calendar title="Termine im Mai"]
 [evg_calendar calendars="5,12"]
+[evg_calendar compact="1" more="/kalender/"]
 ```
+
+`compact="1"` ergibt eine kleine, transparente Monatsansicht (erbt die Textfarbe, z. B. für den dunklen Footer); `more` setzt darunter den Link „Alle Termine →“ (`more_label` ändert den Text). Für Widget-Bereiche gibt es das Widget **„Termine (easyVerein)“** mit denselben Einstellungen – es ersetzt das WordPress-Kalender-Widget, das nur Beiträge zeigt.
 
 Der Kalender kann auf beliebigen Seiten und Beiträgen eingebettet werden. Er benötigt keinen eingeloggten Benutzer; angemeldete Mitglieder sehen zusätzlich ihre freigegebenen Termine.
 
