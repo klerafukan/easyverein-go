@@ -212,12 +212,22 @@ class EVG_Training_Hours {
             return new WP_Error('future_date', 'Datum darf nicht in der Zukunft liegen', ['status' => 400]);
         }
 
+        // Nur für eigene Gruppen erfassen; Gruppenname aus der eigenen Tabelle statt vom Client
+        $group_ev_id = (string)$req->get_param('group_ev_id');
+        if (!in_array($group_ev_id, $this->training_group_ids_for_user(get_current_user_id()), true)) {
+            return new WP_Error('group_not_assigned', 'Du bist dieser Gruppe nicht zugeordnet', ['status' => 403]);
+        }
+        $group_name = (string)$wpdb->get_var($wpdb->prepare(
+            "SELECT COALESCE(NULLIF(name,''), group_id) FROM {$wpdb->prefix}evg_groups WHERE group_id = %s",
+            $group_ev_id
+        ));
+
         $now = current_time('mysql');
         $wpdb->insert($this->table(), [
             'wp_user_id'    => get_current_user_id(),
             'member_name'   => $user->display_name,
-            'group_ev_id'   => $req->get_param('group_ev_id'),
-            'group_name'    => $req->get_param('group_name'),
+            'group_ev_id'   => $group_ev_id,
+            'group_name'    => $group_name !== '' ? $group_name : $req->get_param('group_name'),
             'training_date' => $date_raw,
             'hours'         => round((float)$req->get_param('hours'), 1),
             'note'          => $req->get_param('note') ?: null,
@@ -259,11 +269,18 @@ class EVG_Training_Hours {
 
     public function rest_get_groups( WP_REST_Request $req ) {
         global $wpdb;
+        // Nur Gruppen, in denen der Übungsleiter Mitglied ist oder die ihm zugeteilt sind –
+        // nicht alle EasyVerein-Gruppen (Beitrags-, Verwaltungsgruppen usw.)
+        $ids = $this->training_group_ids_for_user(get_current_user_id());
+        if (!$ids) {
+            return new WP_REST_Response([], 200);
+        }
         $g_table = $wpdb->prefix . 'evg_groups';
-        $rows    = $wpdb->get_results(
-            "SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM {$g_table} ORDER BY label ASC",
-            ARRAY_A
-        );
+        $phs     = implode(',', array_fill(0, count($ids), '%s'));
+        $rows    = $wpdb->get_results($wpdb->prepare(
+            "SELECT group_id, COALESCE(NULLIF(name,''), group_id) AS label FROM {$g_table} WHERE group_id IN ($phs) ORDER BY label ASC",
+            ...$ids
+        ), ARRAY_A);
         $groups = array_map(function($r) {
             return ['group_ev_id' => (string)$r['group_id'], 'label' => (string)$r['label']];
         }, $rows ?: []);
@@ -622,6 +639,39 @@ class EVG_Training_Hours {
         if (!$uid) return false;
         if (current_user_can('manage_options')) return true;
         return (bool)(int)get_user_meta($uid, 'evg_is_uebungsleiter', true);
+    }
+
+    /**
+     * Gruppen, für die ein Übungsleiter Stunden erfassen darf: Gruppen, in denen er laut
+     * EasyVerein-Sync Mitglied ist (evg_member_groups über evg_member_id), plus die ihm am
+     * WP-Benutzer zugeteilten Gruppen (evg_groups). evg_groups_all erweitert die Liste bewusst
+     * nicht – „alle Mitglieder sehen“ heißt nicht „für alle Gruppen buchen“.
+     *
+     * @return string[] group_ev_ids, nur solche, die in evg_groups existieren
+     */
+    private function training_group_ids_for_user(int $uid): array {
+        global $wpdb;
+        if (!$uid) return [];
+
+        $ids = array_map('strval', (array)get_user_meta($uid, 'evg_groups', true));
+
+        $member_id = (string)get_user_meta($uid, 'evg_member_id', true);
+        if ($member_id !== '') {
+            $ids = array_merge($ids, (array)$wpdb->get_col($wpdb->prepare(
+                "SELECT group_id FROM {$wpdb->prefix}evg_member_groups WHERE member_id = %s",
+                $member_id
+            )));
+        }
+
+        $ids = array_values(array_unique(array_filter(array_map('strval', $ids), 'strlen')));
+        if (!$ids) return [];
+
+        // Nur existierende Gruppen
+        $phs = implode(',', array_fill(0, count($ids), '%s'));
+        return array_map('strval', (array)$wpdb->get_col($wpdb->prepare(
+            "SELECT group_id FROM {$wpdb->prefix}evg_groups WHERE group_id IN ($phs)",
+            ...$ids
+        )));
     }
 
     private function current_user_can_approve(): bool {
