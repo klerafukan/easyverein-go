@@ -27,6 +27,7 @@ class EVG_Plugin {
     private const CRON_HOOK        = 'evg_nightly_sync';
     private const EVENTS_CRON_HOOK = 'evg_events_sync';
     private const TOKEN_CRON_HOOK  = 'evg_token_refresh';
+    private const DELTA_CRON_HOOK  = 'evg_delta_sync';
     private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
     private static $instance = null;
@@ -40,6 +41,8 @@ class EVG_Plugin {
         add_action(self::CRON_HOOK,[$this,'run_nightly_sync']);
         add_action(self::EVENTS_CRON_HOOK,[$this,'run_events_sync_cron']);
         add_action(self::TOKEN_CRON_HOOK,'evg_cron_token_refresh');
+        add_action(self::DELTA_CRON_HOOK,[$this,'run_delta_sync_cron']);
+        add_action('update_option_evg_delta_hourly',[$this,'maybe_schedule_cron']);
         // Eigenes Intervall dauerhaft registrieren – sonst schlägt das Neu-Einplanen
         // von evg_events_sync fehl ("invalid_schedule") und flutet das Debug-Log.
         add_filter('cron_schedules',[$this,'register_cron_schedules']);
@@ -66,6 +69,7 @@ class EVG_Plugin {
             'evg_tick_pause_ms'       => 900,
             'evg_nightly_sync_enabled'=> 0,
             'evg_nightly_mode'        => 'delta',
+            'evg_delta_hourly'        => 1,
             'evg_manual_sync_table_prefix'=> 'evg',
             'evg_nightly_sync_table_prefix'=> self::NIGHTLY_TABLE_PREFIX,
             'evg_sync_report_email' => ''
@@ -494,6 +498,7 @@ class EVG_Plugin {
         wp_clear_scheduled_hook(self::CRON_HOOK);
         wp_clear_scheduled_hook(self::EVENTS_CRON_HOOK);
         wp_clear_scheduled_hook(self::TOKEN_CRON_HOOK);
+        wp_clear_scheduled_hook(self::DELTA_CRON_HOOK);
     }
     public function maybe_schedule_cron(){
         if(get_option('evg_nightly_sync_enabled',0)){
@@ -505,6 +510,43 @@ class EVG_Plugin {
         if(!wp_next_scheduled(self::TOKEN_CRON_HOOK)){
             wp_schedule_event(time() + HOUR_IN_SECONDS,'daily',self::TOKEN_CRON_HOOK);
         }
+        if(get_option('evg_delta_hourly',1)){
+            if(!wp_next_scheduled(self::DELTA_CRON_HOOK)){
+                // zur halben Stunde, damit er nicht mit dem nächtlichen Lauf um 03:00 kollidiert
+                $next = (int)(floor(time() / HOUR_IN_SECONDS) * HOUR_IN_SECONDS) + 30 * MINUTE_IN_SECONDS;
+                if($next <= time()) $next += HOUR_IN_SECONDS;
+                wp_schedule_event($next,'hourly',self::DELTA_CRON_HOOK);
+            }
+        } else {
+            wp_clear_scheduled_hook(self::DELTA_CRON_HOOK);
+        }
+    }
+
+    /** WP-Cron-Callback: stündlicher Delta-Sync. */
+    public function run_delta_sync_cron(){
+        if(!get_option('evg_delta_hourly',1)) return;
+        // Bei hoher Serverlast stündlichen Lauf auslassen (der nächste holt alles nach)
+        $load = function_exists('sys_getloadavg') ? sys_getloadavg() : false;
+        $max  = (float) apply_filters('evg_delta_max_load', 0.75 * self::cpu_count());
+        if(is_array($load) && $max > 0 && $load[0] > $max){
+            self::append_delta_log(sprintf('SKIP | Serverlast %.1f > %.1f – stündlicher Lauf ausgelassen', $load[0], $max));
+            return;
+        }
+        self::run_delta_sync(600);
+    }
+
+    private static function cpu_count(){
+        $info = @file_get_contents('/proc/cpuinfo');
+        $n = $info ? preg_match_all('/^processor\s*:/m', $info) : 0;
+        return max(1, (int)$n);
+    }
+
+    public static function delta_log_file($ym = null){
+        return evg_debug_dir().'/delta-'.($ym ?: date('Ym')).'.log';
+    }
+
+    private static function append_delta_log($text){
+        @file_put_contents(self::delta_log_file(), '['.date('Y-m-d H:i:s').'] '.$text."\n", FILE_APPEND | LOCK_EX);
     }
 
     /** 'delta' (Standard) oder 'full' – was der nächtliche Lauf macht. */
@@ -523,10 +565,9 @@ class EVG_Plugin {
         if(function_exists('set_time_limit')){ @set_time_limit($time_budget + 300); }
         $sync = new EVG_Sync(self::live_table_prefix());
         $res  = $sync->delta_run($time_budget);
-        $line = sprintf('[%s] %s | %.1fs | %d Aufrufe | %s',
-            date('Y-m-d H:i:s'), $res['ok'] ? 'OK' : (!empty($res['skipped']) ? 'SKIP' : 'FEHLER'),
-            $res['seconds'], $res['calls'], $res['message']);
-        @file_put_contents(evg_debug_dir().'/delta-'.date('Ym').'.log', $line."\n", FILE_APPEND | LOCK_EX);
+        self::append_delta_log(sprintf('%s | %.1fs | %d Aufrufe | %s',
+            $res['ok'] ? 'OK' : (!empty($res['skipped']) ? 'SKIP' : 'FEHLER'),
+            $res['seconds'], $res['calls'], $res['message']));
         return $res;
     }
 

@@ -50,6 +50,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
         register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
         register_setting('evg_settings','evg_nightly_auto_swap',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
+        register_setting('evg_settings','evg_delta_hourly',['type'=>'boolean','sanitize_callback'=>'absint','default'=>1]);
         register_setting('evg_settings','evg_nightly_mode',['type'=>'string','sanitize_callback'=>function($v){ return $v === 'full' ? 'full' : 'delta'; },'default'=>'delta']);
         // OIDC Web-Login
         register_setting('evg_settings', EVG_Oidc::OPT_CLIENT_ID,    ['sanitize_callback'=>'sanitize_text_field']);
@@ -177,7 +178,8 @@ class EVG_Admin {
                         <td>
                             <?php $mode = EVG_Plugin::nightly_mode(); ?>
                             <label><input type="radio" name="evg_nightly_mode" value="delta" <?php checked('delta',$mode); ?>> <?php esc_html_e('Delta – nur Änderungen direkt in die Live-Tabellen (empfohlen)','ev-groups'); ?></label><br>
-                            <label><input type="radio" name="evg_nightly_mode" value="full" <?php checked('full',$mode); ?>> <?php esc_html_e('Voll – kompletter Sync in die Nightly-Tabellen (Präfix oben, optional Auto-Swap)','ev-groups'); ?></label>
+                            <label><input type="radio" name="evg_nightly_mode" value="full" <?php checked('full',$mode); ?>> <?php esc_html_e('Voll – kompletter Sync in die Nightly-Tabellen (Präfix oben, optional Auto-Swap)','ev-groups'); ?></label><br>
+                            <label style="display:inline-block;margin-top:6px"><input type="checkbox" name="evg_delta_hourly" value="1" <?php checked(1,(int)get_option('evg_delta_hourly',1)); ?>> <?php esc_html_e('Delta-Sync zusätzlich stündlich ausführen (jeweils zur halben Stunde)','ev-groups'); ?></label>
                             <p class="description">
                                 <?php
                                 esc_html_e('Delta holt geänderte Mitglieder, Kontaktdaten und Zusatzfelder über updated_at und gleicht Löschungen sowie Gruppen-Zuordnungen über ID-Listen ab (ca. 85 API-Aufrufe statt mehrerer Tausend). Einen kompletten Sync startest du bei Bedarf unten mit „Komplett synchronisieren“.','ev-groups');
@@ -232,6 +234,7 @@ class EVG_Admin {
                     <button id="evg-test-conn" class="button"><?php echo esc_html__('Verbindung testen','ev-groups'); ?></button>
                     <span id="evg-test-conn-out" style="margin-left:8px;opacity:.8"></span>
                 </p>
+                <?php echo $this->sync_runs_html(); ?>
                 <div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden"><span id="evg-bar" style="display:block;height:100%;background:#10b981;width:0%"></span></div>
                 <pre id="evg-log" style="max-height:220px;overflow:auto;background:#0b1020;color:#d6deff;padding:8px;border-radius:6px;margin-top:8px"></pre>
             </div>
@@ -837,8 +840,47 @@ class EVG_Admin {
     }
 
     private static function nightly_delta_next(){
-        if (EVG_Plugin::nightly_mode() !== 'delta') return 0;
-        return (int) wp_next_scheduled('evg_nightly_sync');
+        $times = array_filter([
+            (int) get_option('evg_delta_hourly',1) ? (int) wp_next_scheduled('evg_delta_sync') : 0,
+            EVG_Plugin::nightly_mode() === 'delta' ? (int) wp_next_scheduled('evg_nightly_sync') : 0,
+        ]);
+        return $times ? min($times) : 0;
+    }
+
+    /** Übersicht im Sync-Kasten: letzter Komplett-/Delta-Lauf, nächster Lauf, letzte Delta-Einträge. */
+    private function sync_runs_html(){
+        $fmt = function($ts){ return $ts ? wp_date('d.m.Y H:i', (int)$ts) : '–'; };
+        $full = get_option('evg_last_sync_completed','');
+        $full_ts = $full ? strtotime($full.' UTC') : 0;
+        $res = get_option(EVG_Sync::delta_result_option(EVG_Plugin::live_table_prefix()), []);
+        $next = self::nightly_delta_next();
+
+        $rows = [
+            [__('Letzter Komplett-Sync','ev-groups'), $fmt($full_ts)],
+            [__('Letzter Delta-Sync','ev-groups'), is_array($res) && !empty($res['finished'])
+                ? $fmt($res['finished']).' – '.(!empty($res['ok']) ? 'OK' : __('FEHLER','ev-groups')).': '.($res['message'] ?? '')
+                : '–'],
+            [__('Nächster Delta-Sync','ev-groups'), $fmt($next)],
+        ];
+        $html = '<table class="widefat striped" style="margin:8px 0;max-width:900px"><tbody>';
+        foreach ($rows as $r) {
+            $html .= '<tr><th style="width:180px">'.esc_html($r[0]).'</th><td>'.esc_html($r[1]).'</td></tr>';
+        }
+        $html .= '</tbody></table>';
+
+        // Letzte Einträge aus dem Delta-Log (aktueller + Vormonat)
+        $lines = [];
+        foreach ([date('Ym', strtotime('first day of last month')), date('Ym')] as $ym) {
+            $f = EVG_Plugin::delta_log_file($ym);
+            if (is_readable($f)) $lines = array_merge($lines, file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
+        }
+        if ($lines) {
+            $html .= '<details><summary>'.esc_html__('Letzte Delta-Läufe','ev-groups').'</summary>'
+                  .'<pre style="max-height:200px;overflow:auto;background:#f6f7f7;padding:8px;font-size:12px">'
+                  .esc_html(implode("\n", array_reverse(array_slice($lines, -24))))
+                  .'</pre></details>';
+        }
+        return $html;
     }
 
     private function delta_status_html(){

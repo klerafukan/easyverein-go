@@ -34,6 +34,8 @@ Der Voll-Sync fragt **pro Mitglied** ab (~3 Aufrufe je Mitglied, ca. eine Stunde
 - **Komplett synchronisieren** – vollständiger Lauf in die Live-Tabellen mit Fortschrittsbalken und Tick-by-Tick-Log; leert die Tabellen zu Beginn, jederzeit per Stop-Button abbrechbar
 - **Nur Änderungen holen (Delta)** – Delta-Sync in die Live-Tabellen, 1–2 Minuten, ohne Unterbrechung
 - **Quick-10-Test** – verarbeitet nur 10 Mitglieder, schreibt in das Nightly-Präfix, ohne Produktivdaten zu berühren
+- **Stündlicher Delta-Sync** – WP-Cron `evg_delta_sync` jeweils zur halben Stunde (Checkbox, Standard an); fällt bei hoher Serverlast aus (1-Minuten-Load > 75 % der CPU-Kerne, Filter `evg_delta_max_load`)
+- **Laufübersicht** im Sync-Kasten: letzter Komplett-Sync, letzter/nächster Delta-Sync und die letzten Einträge aus `delta-YYYYMM.log`
 - **Nächtlicher Sync** – täglich ca. 03:00 Uhr (WP-Cron und/oder System-Cron `bin/nightly-sync.sh`); Modus einstellbar: **Delta** (Standard) oder **Voll** in die Nightly-Tabellen
 - **Nightly-Sync manuell simulieren** – vollständiger Lauf in die Spiegel-Tabellen direkt aus dem Admin heraus
 
