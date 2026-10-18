@@ -35,6 +35,16 @@ API-Aufrufe erfolgen **per Member** (kein Bulk), um HTTP-429-Rate-Limiting zu ve
 - **Quick-10-Test** – verarbeitet nur 10 Mitglieder, schreibt in das Nightly-Präfix, ohne Produktivdaten zu berühren
 - **Nächtlicher Vollsync** – täglich via WP-Cron (ca. 03:00 Uhr, per Checkbox aktivierbar)
 - **Nightly-Sync manuell simulieren** – vollständiger Lauf in die Spiegel-Tabellen direkt aus dem Admin heraus
+- **Delta-Sync** – stündlich (WP-Cron `evg_delta_sync`) oder per Button „Nur Änderungen holen“; siehe unten
+
+### Delta-Sync
+
+Der Delta-Sync aktualisiert die Live-Tabellen (Präfix aus „Tabellen-Präfix (manuell)“, Standard `evg`) ohne sie vorher zu leeren und nutzt die Sammel-Endpunkte der API v3.0:
+
+- geänderte Mitglieder, Kontaktdaten und Custom-Field-Werte über `updated_at__gte` (Kontaktdaten nur mit den benötigten Feldern, keine Bankdaten)
+- schlanke ID-Listen (`query={id,…}`) für gelöschte Mitglieder, Gruppen-Zuordnungen und entfernte Custom-Field-Werte
+
+Ein Lauf braucht rund 70–100 API-Aufrufe (1–2 Minuten). Ausgangspunkt ist der Start des letzten erfolgreichen Delta-Laufs bzw. vollständigen Syncs (Option `evg_delta_since_<präfix>`, 10 Minuten Überlappung). Schlägt ein Schritt fehl oder liefert die API unplausibel wenige Datensätze, bricht der Lauf ohne Löschungen ab und wiederholt beim nächsten Mal denselben Zeitraum. Läuft gerade ein voller Sync in dieselben Tabellen, wird der Delta-Lauf übersprungen. Protokoll: `wp-content/easyverein-debug/delta-YYYYMM.log`.
 
 ### Automatische API-Token-Erneuerung
 
@@ -175,6 +185,9 @@ wp cron event run evg_nightly_sync
 
 # Geplante Events prüfen
 wp cron event list | grep evg_nightly_sync
+
+# Delta-Sync sofort ausführen (ohne HTTP-Zeitlimit)
+wp eval 'EVG_Plugin::get_instance()->run_delta_sync_cli();'
 ```
 
 Über **Einstellungen → Easyverein Go → Tabellen-Präfix (nächtlich)** lässt sich steuern, ob der Cron-Lauf in Spiegel-Tabellen (`evg_nightly_*`) oder direkt in die produktiven Tabellen (`evg_*`) schreibt.
@@ -186,7 +199,9 @@ wp cron event list | grep evg_nightly_sync
 Bei jedem Push auf `main` läuft der CI/CD-Workflow automatisch in zwei Schritten:
 
 1. **Version-Bump** – Die Patch-Version in `easyverein-go.php` und `README.md` wird inkrementiert und als Commit zurück in den Branch geschrieben.
-2. **rsync-Deploy** – Plugin-Dateien werden per SSH auf den Staging-Server übertragen.
+2. **rsync-Deploy** – Plugin-Dateien werden per SSH auf die **Testseite** (staging.tv-miesbach.de) übertragen.
+
+Live (tv-miesbach.de) wird nur manuell deployt: GitHub → Actions → „Deploy to WordPress“ → „Run workflow“ → Ziel `live`. Dabei wird die Version nicht erhöht; live erhält exakt den Stand der Testseite.
 
 Folgende GitHub-Secrets müssen im Repository hinterlegt sein:
 
@@ -196,7 +211,8 @@ Folgende GitHub-Secrets müssen im Repository hinterlegt sein:
 | `SSH_HOST` | Hostname / IP des Zielservers |
 | `SSH_USER` | SSH-Benutzername |
 | `SSH_PORT` | SSH-Port (Standard: 22) |
-| `REMOTE_PATH` | Absoluter Pfad zum Plugin-Verzeichnis auf dem Server |
+| `REMOTE_PATH` | Plugin-Verzeichnis der Live-Seite |
+| `REMOTE_PATH_TEST` | Plugin-Verzeichnis der Testseite |
 
 ---
 

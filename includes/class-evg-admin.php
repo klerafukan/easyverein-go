@@ -11,6 +11,7 @@ class EVG_Admin {
         add_action('wp_ajax_evg_nightly_log', [$this,'ajax_nightly_log']);
         add_action('wp_ajax_evg_table_swap',  [$this,'ajax_table_swap']);
         add_action('wp_ajax_evg_swap_delta',  [$this,'ajax_swap_delta']);
+        add_action('wp_ajax_evg_delta_sync',  [$this,'ajax_delta_sync']);
 
         add_action('show_user_profile', [$this,'user_groups_fields']);
         add_action('edit_user_profile',  [$this,'user_groups_fields']);
@@ -49,6 +50,7 @@ class EVG_Admin {
         register_setting('evg_settings','evg_manual_sync_table_prefix',['type'=>'string','sanitize_callback'=>[$this,'sanitize_table_prefix'],'default'=>'evg']);
         register_setting('evg_settings','evg_sync_report_email',['type'=>'string','sanitize_callback'=>'sanitize_email','default'=>'']);
         register_setting('evg_settings','evg_nightly_auto_swap',['type'=>'boolean','sanitize_callback'=>'absint','default'=>0]);
+        register_setting('evg_settings','evg_delta_sync_enabled',['type'=>'boolean','sanitize_callback'=>'absint','default'=>1]);
         // OIDC Web-Login
         register_setting('evg_settings', EVG_Oidc::OPT_CLIENT_ID,    ['sanitize_callback'=>'sanitize_text_field']);
         register_setting('evg_settings', EVG_Oidc::OPT_REDIRECT_URI, ['sanitize_callback'=>'esc_url_raw']);
@@ -169,7 +171,23 @@ class EVG_Admin {
                                 ?>
                             </p>
                         </td>
-                    </tr>                    <tr>
+                    </tr>
+                    <tr>
+                        <th><?php esc_html_e('Delta-Sync (stündlich)','ev-groups'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="evg_delta_sync_enabled" value="1" <?php checked(1,(int)get_option('evg_delta_sync_enabled',1)); ?>>
+                                <?php esc_html_e('Jede Stunde nur Änderungen seit dem letzten Lauf in die Live-Tabellen übernehmen','ev-groups'); ?>
+                            </label>
+                            <p class="description">
+                                <?php
+                                esc_html_e('Holt geänderte Mitglieder, Kontaktdaten und Zusatzfelder über updated_at und gleicht Löschungen sowie Gruppen-Zuordnungen über ID-Listen ab (ca. 70–100 API-Aufrufe statt mehrerer Tausend). Der nächtliche Voll-Sync bleibt als Sicherheitsnetz bestehen.','ev-groups');
+                                echo ' '.wp_kses_post($this->delta_status_html());
+                                ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
                         <th><?php esc_html_e('Empfänger Sync-Protokoll','ev-groups'); ?></th>
                         <td>
                             <?php $report_email = get_option('evg_sync_report_email',''); ?>
@@ -211,6 +229,7 @@ class EVG_Admin {
                     <button id="evg-sync-start" class="button button-primary"><?php echo esc_html__('Jetzt synchronisieren','ev-groups'); ?></button>
                     <button id="evg-sync-quick10" class="button"><?php echo esc_html__('Nur 10 Mitglieder testen','ev-groups'); ?></button>
                     <button id="evg-sync-stop" class="button" style="display:none;color:#dc2626;border-color:#dc2626"><?php echo esc_html__('Stop','ev-groups'); ?></button>
+                    <button id="evg-delta-run" class="button"><?php echo esc_html__('Nur Änderungen holen (Delta)','ev-groups'); ?></button>
                     <button id="evg-test-conn" class="button"><?php echo esc_html__('Verbindung testen','ev-groups'); ?></button>
                     <span id="evg-test-conn-out" style="margin-left:8px;opacity:.8"></span>
                 </p>
@@ -531,6 +550,16 @@ class EVG_Admin {
                 }).fail(function() { tOut.textContent = 'Netzwerkfehler'; });
             };
 
+            document.getElementById('evg-delta-run').onclick = function(e) {
+                e.preventDefault();
+                var btn = this; btn.disabled = true;
+                tOut.textContent = 'Delta-Sync läuft (kann 1–3 Minuten dauern)…';
+                jQuery.post(ajax, {action:'evg_delta_sync', _wpnonce:n1}, function(r) {
+                    tOut.textContent = (r && r.data && r.data.message) ? r.data.message : (r && r.success ? 'OK' : 'Fehler');
+                }).fail(function(xhr) { tOut.textContent = 'Netzwerkfehler (Status: ' + xhr.status + ')'; })
+                  .always(function(){ btn.disabled = false; });
+            };
+
             document.getElementById('evg-sync-start').onclick    = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix); };
             document.getElementById('evg-sync-quick10').onclick   = function(e) { e.preventDefault(); manualSync(EVGAdmin.manualPrefix, 10); };
             document.getElementById('evg-nightly-sim').onclick    = function(e) { e.preventDefault(); nightlySync(EVGAdmin.nightlyPrefix); };
@@ -806,6 +835,32 @@ class EVG_Admin {
             wp_send_json_error(['message'=>'Datei nicht lesbar']);
         }
         wp_send_json_success(['content' => $content]);
+    }
+
+    private function delta_status_html(){
+        $res = get_option(EVG_Sync::delta_result_option(EVG_Plugin::live_table_prefix()), []);
+        if (!is_array($res) || empty($res['finished'])) {
+            return '<strong>'.esc_html__('Noch kein Lauf.','ev-groups').'</strong>';
+        }
+        $next = wp_next_scheduled('evg_delta_sync');
+        return sprintf('<strong>%s %s:</strong> %s (%s s, %d %s)%s',
+            esc_html__('Letzter Lauf','ev-groups'),
+            esc_html(wp_date('d.m.Y H:i', (int)$res['finished'])),
+            esc_html($res['message'] ?? ''),
+            esc_html((string)($res['seconds'] ?? '')),
+            (int)($res['calls'] ?? 0),
+            esc_html__('Aufrufe','ev-groups'),
+            $next ? ' – '.esc_html__('nächster:','ev-groups').' '.esc_html(wp_date('H:i', $next)) : ''
+        );
+    }
+
+    public function ajax_delta_sync(){
+        check_ajax_referer('evg_sync');
+        if(!current_user_can('manage_options')) wp_send_json_error(['message'=>'no capability'],403);
+        $res = EVG_Plugin::run_delta_sync(240);
+        $msg = $res['message'].sprintf(' (%.1f s, %d Aufrufe)', $res['seconds'], $res['calls']);
+        if ($res['ok']) wp_send_json_success(['message'=>$msg,'stats'=>$res['stats'] ?? []]);
+        wp_send_json_error(['message'=>$msg]);
     }
 
     public function ajax_test_connection(){

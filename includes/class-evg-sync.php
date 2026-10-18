@@ -4,6 +4,7 @@ if (!defined('ABSPATH')) { exit; }
 class EVG_Sync {
     private $state_key='evg_sync_job';
     private $table_prefix='evg';
+    private $delta_calls=0;
 
     public static function sanitize_table_prefix($prefix){
         return evg_sanitize_table_prefix($prefix);
@@ -300,6 +301,193 @@ class EVG_Sync {
     private function put_state($s){ update_option($this->state_key,$s,false); }
     private function clear_state(){ delete_option($this->state_key); }
 
+    // ── Gemeinsame Schreib-Helfer (voller Sync + Delta-Sync) ────────────────
+
+    /** Gruppe upserten; gibt die Gruppen-ID zurück oder null. */
+    private function upsert_group(array $g, $now){
+        global $wpdb;
+        $gid  = $g['id'] ?? $g['groupId'] ?? $g['uuid'] ?? null;
+        if (!$gid) return null;
+        $name  = $g['name']  ?? $g['title']     ?? $g['groupName'] ?? (string)$gid;
+        $short = $g['short'] ?? $g['shortName'] ?? '';
+        $g_table = $this->table('groups');
+        $wpdb->query($wpdb->prepare(
+            "INSERT INTO $g_table (group_id,name,short,updated_at,raw) VALUES (%s,%s,%s,%s,%s)
+             ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at),raw=IF(VALUES(raw)<>'' AND VALUES(raw) IS NOT NULL,VALUES(raw),raw),name=IF(VALUES(name)<>'' AND VALUES(name) IS NOT NULL,VALUES(name),name),short=IF(VALUES(short)<>'' AND VALUES(short) IS NOT NULL,VALUES(short),short)",
+            $gid, (string)$name, (string)$short, $now,
+            wp_json_encode($g,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+        ));
+        return (string)$gid;
+    }
+
+    /** Custom-Field-Definition upserten und Typ/Label im State merken; gibt die Feld-ID zurück oder null. */
+    private function upsert_custom_field(array $field, array &$s, $now){
+        global $wpdb;
+        $fid = null;
+        foreach (['id','uuid','pk','customFieldId','fieldId'] as $fk){
+            if (!empty($field[$fk]) && !is_array($field[$fk])){ $fid=(string)$field[$fk]; break; }
+        }
+        if (!$fid && isset($field['url'])  && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['url'],$mm))  $fid=$mm[1];
+        if (!$fid && isset($field['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['href'],$mm)) $fid=$mm[1];
+        if (!$fid) return null;
+        $name          = (string)($field['name']         ?? '');
+        $settings_type = (string)($field['settings_type'] ?? $field['settingsType'] ?? '');
+        $kind          = (string)($field['kind']          ?? '');
+        $member_show   = (!empty($field['member_show']) || !empty($field['memberShow'])) ? 1 : 0;
+        $member_edit   = (!empty($field['member_edit']) || !empty($field['memberEdit'])) ? 1 : 0;
+        $position      = (int)($field['position'] ?? 0);
+        $collection    = '';
+        if (isset($field['collection'])){
+            $col = $field['collection'];
+            if (is_numeric($col)) $collection = (string)$col;
+            elseif (is_string($col)) $collection = $col;
+            elseif (is_array($col)){
+                if (isset($col['id']))  $collection = (string)$col['id'];
+                elseif (isset($col['pk'])) $collection = (string)$col['pk'];
+                elseif (!empty($col['href']) && preg_match('~/custom-field-collections?/([0-9a-zA-Z_-]+)~',(string)$col['href'],$mm)) $collection=$mm[1];
+            }
+        }
+        $s['custom_field_types'][$fid]  = $settings_type;
+        $s['custom_field_labels'][$fid]  = $name !== '' ? $name : $fid;
+        $wpdb->replace($this->table('custom_fields'),[
+            'field_id'      => $fid, 'name' => $name, 'settings_type' => $settings_type,
+            'kind'          => $kind, 'member_show' => $member_show, 'member_edit' => $member_edit,
+            'position'      => $position, 'collection' => $collection, 'updated_at' => $now,
+            'raw'           => wp_json_encode($field,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+        ],['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']);
+        return $fid;
+    }
+
+    /** Mitglied (Listenfelder) upserten; gibt die Mitglieds-ID zurück oder null. */
+    private function upsert_member_row(array $m, $now){
+        global $wpdb;
+        $mid = $m['id'] ?? $m['memberId'] ?? $m['uuid'] ?? null;
+        if (!$mid) return null;
+        $mid = (string)$mid;
+        $mno = $m['membership_number'] ?? $m['memberNumber'] ?? $m['membershipNumber'] ?? $m['number'] ?? '';
+        $cd  = '';
+        if (!empty($m['contactDetails']) && is_string($m['contactDetails']))          $cd = $m['contactDetails'];
+        elseif (!empty($m['contact_details']) && is_string($m['contact_details']))    $cd = $m['contact_details'];
+        elseif (isset($m['contactDetails']['href']))                                   $cd = (string)$m['contactDetails']['href'];
+        elseif (isset($m['contactDetailsId']))  $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']);
+        elseif (isset($m['contactId']))         $cd = '/api/v3.0/contact-details/'.intval($m['contactId']);
+        if ($cd !== '' && strpos($cd,'http') !== 0) $cd = $this->base().(strpos($cd,'/')===0 ? $cd : '/'.$cd);
+        $m_table = $this->table('members');
+        $wpdb->query($wpdb->prepare(
+            "INSERT INTO {$m_table} (member_id,member_number,contact_details,updated_at) VALUES (%s,%s,%s,%s)
+             ON DUPLICATE KEY UPDATE member_number=VALUES(member_number),contact_details=VALUES(contact_details),updated_at=VALUES(updated_at)",
+            $mid, (string)$mno, $cd, $now
+        ));
+        return $mid;
+    }
+
+    /** Kontaktdaten (contact-details-Objekt) in die Mitgliederzeile schreiben. */
+    private function apply_contact_details($mid, array $d){
+        global $wpdb;
+        $m_table = $this->table('members');
+        $now = current_time('mysql',1);
+        $first  = $d['first_name']  ?? $d['firstName']  ?? '';
+        $family = $d['family_name']  ?? $d['familyName'] ?? $d['lastName'] ?? $d['last_name'] ?? '';
+        $dob    = $d['date_of_birth'] ?? $d['dateOfBirth'] ?? $d['birthDate'] ?? null;
+        $age    = isset($d['age']) ? intval($d['age']) : null;
+        $pemail = $d['private_email'] ?? $d['privateEmail'] ?? $d['email_private'] ?? $d['primary_email'] ?? $d['email'] ?? '';
+        $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
+        $city   = $d['city']   ?? '';
+        $street = $d['street'] ?? '';
+        $addrS  = $d['address_suffix'] ?? $d['addressSuffix'] ?? $d['addressAddition'] ?? '';
+        $birthYear = null;
+        if (isset($d['birthYear']))       $birthYear = intval($d['birthYear']);
+        elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
+        elseif (!empty($dob) && preg_match('/^\d{4}/',(string)$dob,$mY)) $birthYear = intval($mY[0]);
+        if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y'))+1)) $birthYear = null;
+        $gender = '';
+        if (!empty($d['salutation'])) $gender = is_array($d['salutation']) ? implode(', ',array_filter(array_map('trim',(array)$d['salutation']))) : trim((string)$d['salutation']);
+        foreach (['gender','sex','sexType'] as $gk){ if (!empty($d[$gk])){ $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]); break; } }
+        if (strlen($gender) > 32) $gender = substr($gender,0,32);
+        $phones = [];
+        $pKeys = ['private_phone','mobile_phone','company_phone',
+                  'phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
+                  'private_telephone','privateTelephone','mobilePhone','mobile','mobile_private','mobilePrivate',
+                  'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
+        if (isset($d['phones']) && is_array($d['phones'])){ foreach($d['phones'] as $p){ if(is_string($p)&&trim($p)!=='') $phones[]=trim($p); if(is_array($p)) foreach($p as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } }
+        foreach ($pKeys as $pk){ if(!empty($d[$pk])){ if(is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
+        $phones = array_values(array_filter(array_unique($phones)));
+        $phone  = substr(implode(', ',array_slice($phones,0,3)),0,120);
+        $setParts = ['first_name=%s','family_name=%s','age=%d','email_private=%s','zip=%s','city=%s','street=%s','address_suffix=%s','gender=%s','phone=%s','updated_at=%s'];
+        $params   = [$first,$family,$age,$pemail,$zip,$city,$street,(string)$addrS,$gender,$phone,$now];
+        if (!empty($dob)&&$dob!=='0000-00-00'&&$dob!=='0000-00-00 00:00:00'){ $setParts[]='date_of_birth=%s'; $params[]=$dob; } else { $setParts[]='date_of_birth=NULL'; }
+        if ($birthYear !== null){ $setParts[]='birth_year=%d'; $params[]=$birthYear; } else { $setParts[]='birth_year=NULL'; }
+        $params[] = $mid;
+        $wpdb->query($wpdb->prepare("UPDATE {$m_table} SET ".implode(',',$setParts)." WHERE member_id=%s",$params));
+    }
+
+    /** Feld-ID aus einer Custom-Field-Zuordnung lesen. */
+    private function field_id_from_assignment(array $entry){
+        $field_id = null;
+        $fieldRef = $entry['customField'] ?? $entry['custom_field'] ?? null;
+        if (is_string($fieldRef) && $fieldRef !== ''){
+            if (preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',$fieldRef,$mm)) $field_id=$mm[1]; else $field_id=$fieldRef;
+        } elseif (is_array($fieldRef)){
+            if (!empty($fieldRef['id']))  $field_id=(string)$fieldRef['id'];
+            elseif (!empty($fieldRef['pk'])) $field_id=(string)$fieldRef['pk'];
+            elseif (!empty($fieldRef['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$fieldRef['href'],$mm)) $field_id=$mm[1];
+        }
+        if (!$field_id) $field_id = $entry['customFieldId'] ?? $entry['fieldId'] ?? null;
+        if (!$field_id) $field_id = isset($entry['id']) ? (string)$entry['id'] : null;
+        return $field_id ? (string)$field_id : null;
+    }
+
+    /**
+     * Custom-Field-Zuordnung eines Mitglieds speichern.
+     * Rückgabe: null (unbrauchbar) oder ['mid','fid','stored'=>bool,'new_value'=>bool].
+     * stored=false heißt: Wert ist leer – der Aufrufer entscheidet, ob eine bestehende Zeile gelöscht wird.
+     */
+    private function store_member_cf_entry(array $entry, array &$s, &$calls, $now){
+        global $wpdb;
+        $mid = $this->extract_member_id_from_ref($entry['user_object'] ?? null);
+        if (!$mid) return null;
+        $field_id = $this->field_id_from_assignment($entry);
+        if (!$field_id) return null;
+        $value_source = null;
+        if (array_key_exists('value',$entry))       $value_source = $entry['value'];
+        elseif (array_key_exists('valueText',$entry)) $value_source = $entry['valueText'];
+        elseif (array_key_exists('value_text',$entry)) $value_source = $entry['value_text'];
+        if (($value_source === null||$value_source===''||$value_source===[]) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])) $value_source=$entry['selectOptions'];
+        if (($value_source === null||$value_source===''||$value_source===[]) && !empty($entry['selected_options']) && is_array($entry['selected_options'])){
+            $value_source = $this->resolve_select_options($entry['selected_options'],$s,$calls);
+        }
+        $prepared = $this->prepare_custom_field_value($field_id,$value_source);
+        if (!$prepared) return ['mid'=>$mid,'fid'=>$field_id,'stored'=>false,'new_value'=>false];
+        $cf_table = $this->table('custom_fields');
+        $field_label = $s['custom_field_labels'][$field_id] ?? '';
+        if ($field_label === ''){
+            $field_label = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM {$cf_table} WHERE field_id=%s LIMIT 1",$field_id)) ?: $field_id);
+            $s['custom_field_labels'][$field_id] = $field_label;
+        }
+        $entry_raw = wp_json_encode($entry,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        $wpdb->replace($this->table('member_custom_fields'),['member_id'=>$mid,'field_id'=>$field_id,'value_hash'=>$prepared['hash'],'value_text'=>$prepared['label'],'updated_at'=>$now,'raw'=>$entry_raw],['%s','%s','%s','%s','%s','%s']);
+        $wpdb->replace($this->table('custom_field_values'),['field_id'=>$field_id,'value_hash'=>$prepared['hash'],'field_label'=>$field_label,'value_label'=>$prepared['label'],'value_raw'=>$prepared['raw'],'updated_at'=>$now],['%s','%s','%s','%s','%s','%s']);
+        $cv_key = $field_id.'|'.$prepared['hash'];
+        $new_value = !isset($s['custom_field_values_seen'][$cv_key]);
+        $s['custom_field_values_seen'][$cv_key] = true;
+        return ['mid'=>$mid,'fid'=>$field_id,'stored'=>true,'new_value'=>$new_value];
+    }
+
+    /** Gruppen-ID aus einer Gruppen-Zuordnung lesen. */
+    private function group_id_from_assignment(array $g){
+        $gid = null;
+        $mgRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
+        if (is_string($mgRef)){
+            if (preg_match('~/(?:member-group|groups?)/([0-9]+)~',$mgRef,$mm)) $gid=$mm[1];
+            else { $tail=parse_url($mgRef,PHP_URL_PATH); if($tail){ $parts=explode('/',trim($tail,'/')); $last=end($parts); if(ctype_digit($last)) $gid=$last; } }
+        } elseif (is_array($mgRef)){
+            if (!empty($mgRef['id']) && is_numeric($mgRef['id'])) $gid=(string)$mgRef['id'];
+            elseif (!empty($mgRef['href']) && preg_match('~/(?:member-group|groups?)/([0-9]+)~',(string)$mgRef['href'],$mm)) $gid=$mm[1];
+        }
+        if (!$gid && isset($g['groupId']) && is_numeric($g['groupId'])) $gid=(string)$g['groupId'];
+        return $gid;
+    }
+
     public function job_start($cap=0){
         global $wpdb;
         $this->ensure_custom_field_schema();
@@ -327,7 +515,8 @@ class EVG_Sync {
             'select_option_labels'    => [],
             'custom_field_values_seen'=> [],
             'cap'  => max(0,(int)$cap),
-            'done' => false
+            'done' => false,
+            'started_at' => time()
         ];
         $this->put_state($state);
     }
@@ -435,18 +624,7 @@ class EVG_Sync {
                 $next  = $this->extract_next_from_payload($body);
                 $now   = current_time('mysql',1);
                 foreach ((array)$items as $g){
-                    if (!is_array($g)) continue;
-                    $gid  = $g['id'] ?? $g['groupId'] ?? $g['uuid'] ?? null;
-                    if (!$gid) continue;
-                    $name  = $g['name']  ?? $g['title']     ?? $g['groupName'] ?? (string)$gid;
-                    $short = $g['short'] ?? $g['shortName'] ?? '';
-                    $wpdb->query($wpdb->prepare(
-                        "INSERT INTO $g_table (group_id,name,short,updated_at,raw) VALUES (%s,%s,%s,%s,%s)
-                         ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at),raw=IF(VALUES(raw)<>'' AND VALUES(raw) IS NOT NULL,VALUES(raw),raw),name=IF(VALUES(name)<>'' AND VALUES(name) IS NOT NULL,VALUES(name),name),short=IF(VALUES(short)<>'' AND VALUES(short) IS NOT NULL,VALUES(short),short)",
-                        $gid, (string)$name, (string)$short, $now,
-                        wp_json_encode($g,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
-                    ));
-                    $s['counts']['groups']++;
+                    if (is_array($g) && $this->upsert_group($g,$now) !== null) $s['counts']['groups']++;
                 }
                 $s['pages']['groups']++;
                 $s['next']['groups'] = $this->next_url($next);
@@ -466,40 +644,7 @@ class EVG_Sync {
                 $next  = $this->extract_next_from_payload($body);
                 $now   = current_time('mysql',1);
                 foreach ((array)$items as $field){
-                    if (!is_array($field)) continue;
-                    $fid = null;
-                    foreach (['id','uuid','pk','customFieldId','fieldId'] as $fk){
-                        if (!empty($field[$fk]) && !is_array($field[$fk])){ $fid=(string)$field[$fk]; break; }
-                    }
-                    if (!$fid && isset($field['url'])  && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['url'],$mm))  $fid=$mm[1];
-                    if (!$fid && isset($field['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$field['href'],$mm)) $fid=$mm[1];
-                    if (!$fid) continue;
-                    $name          = (string)($field['name']         ?? '');
-                    $settings_type = (string)($field['settings_type'] ?? $field['settingsType'] ?? '');
-                    $kind          = (string)($field['kind']          ?? '');
-                    $member_show   = (!empty($field['member_show']) || !empty($field['memberShow'])) ? 1 : 0;
-                    $member_edit   = (!empty($field['member_edit']) || !empty($field['memberEdit'])) ? 1 : 0;
-                    $position      = (int)($field['position'] ?? 0);
-                    $collection    = '';
-                    if (isset($field['collection'])){
-                        $col = $field['collection'];
-                        if (is_numeric($col)) $collection = (string)$col;
-                        elseif (is_string($col)) $collection = $col;
-                        elseif (is_array($col)){
-                            if (isset($col['id']))  $collection = (string)$col['id'];
-                            elseif (isset($col['pk'])) $collection = (string)$col['pk'];
-                            elseif (!empty($col['href']) && preg_match('~/custom-field-collections?/([0-9a-zA-Z_-]+)~',(string)$col['href'],$mm)) $collection=$mm[1];
-                        }
-                    }
-                    $s['custom_field_types'][$fid]  = $settings_type;
-                    $s['custom_field_labels'][$fid]  = $name !== '' ? $name : $fid;
-                    $wpdb->replace($cf_table,[
-                        'field_id'      => $fid, 'name' => $name, 'settings_type' => $settings_type,
-                        'kind'          => $kind, 'member_show' => $member_show, 'member_edit' => $member_edit,
-                        'position'      => $position, 'collection' => $collection, 'updated_at' => $now,
-                        'raw'           => wp_json_encode($field,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
-                    ],['%s','%s','%s','%s','%d','%d','%d','%s','%s','%s']);
-                    $s['counts']['custom_fields']++;
+                    if (is_array($field) && $this->upsert_custom_field($field,$s,$now) !== null) $s['counts']['custom_fields']++;
                 }
                 $s['pages']['custom_fields']++;
                 $s['next']['custom_fields'] = $this->next_url($next);
@@ -525,22 +670,8 @@ class EVG_Sync {
                 $now   = current_time('mysql',1);
                 foreach ((array)$items as $m){
                     if (!is_array($m)) continue;
-                    $mid = $m['id'] ?? $m['memberId'] ?? $m['uuid'] ?? null;
-                    if (!$mid) continue;
-                    $mid = (string)$mid;
-                    $mno = $m['membership_number'] ?? $m['memberNumber'] ?? $m['membershipNumber'] ?? $m['number'] ?? '';
-                    $cd  = '';
-                    if (!empty($m['contactDetails']) && is_string($m['contactDetails']))          $cd = $m['contactDetails'];
-                    elseif (!empty($m['contact_details']) && is_string($m['contact_details']))    $cd = $m['contact_details'];
-                    elseif (isset($m['contactDetails']['href']))                                   $cd = (string)$m['contactDetails']['href'];
-                    elseif (isset($m['contactDetailsId']))  $cd = '/api/v3.0/contact-details/'.intval($m['contactDetailsId']);
-                    elseif (isset($m['contactId']))         $cd = '/api/v3.0/contact-details/'.intval($m['contactId']);
-                    if ($cd !== '' && strpos($cd,'http') !== 0) $cd = $this->base().(strpos($cd,'/')===0 ? $cd : '/'.$cd);
-                    $wpdb->query($wpdb->prepare(
-                        "INSERT INTO {$m_table} (member_id,member_number,contact_details,updated_at) VALUES (%s,%s,%s,%s)
-                         ON DUPLICATE KEY UPDATE member_number=VALUES(member_number),contact_details=VALUES(contact_details),updated_at=VALUES(updated_at)",
-                        $mid, (string)$mno, $cd, $now
-                    ));
+                    $mid = $this->upsert_member_row($m,$now);
+                    if ($mid === null) continue;
                     $s['member_ids'][] = $mid;
                     $s['counts']['members_list']++;
                     if ($s['cap'] > 0 && count($s['member_ids']) >= $s['cap']) { $next = null; break; }
@@ -571,43 +702,7 @@ class EVG_Sync {
                 if (!is_wp_error($resp) && ($c=wp_remote_retrieve_response_code($resp))>=200 && $c<300){
                     $raw_body = wp_remote_retrieve_body($resp);
                     $d = json_decode($raw_body,true);
-                    // Log first successful contact-details response to debug dir for field-name inspection
-                    if (is_array($d)){
-                        $now = current_time('mysql',1);
-                        $first  = $d['first_name']  ?? $d['firstName']  ?? '';
-                        $family = $d['family_name']  ?? $d['familyName'] ?? $d['lastName'] ?? $d['last_name'] ?? '';
-                        $dob    = $d['date_of_birth'] ?? $d['dateOfBirth'] ?? $d['birthDate'] ?? null;
-                        $age    = isset($d['age']) ? intval($d['age']) : null;
-                        $pemail = $d['private_email'] ?? $d['privateEmail'] ?? $d['email_private'] ?? $d['primary_email'] ?? $d['email'] ?? '';
-                        $zip    = $d['zip']    ?? $d['postalCode']  ?? '';
-                        $city   = $d['city']   ?? '';
-                        $street = $d['street'] ?? '';
-                        $addrS  = $d['address_suffix'] ?? $d['addressSuffix'] ?? $d['addressAddition'] ?? '';
-                        $birthYear = null;
-                        if (isset($d['birthYear']))       $birthYear = intval($d['birthYear']);
-                        elseif (isset($d['yearOfBirth'])) $birthYear = intval($d['yearOfBirth']);
-                        elseif (!empty($dob) && preg_match('/^\d{4}/',(string)$dob,$mY)) $birthYear = intval($mY[0]);
-                        if ($birthYear !== null && ($birthYear < 1900 || $birthYear > intval(date('Y'))+1)) $birthYear = null;
-                        $gender = '';
-                        if (!empty($d['salutation'])) $gender = is_array($d['salutation']) ? implode(', ',array_filter(array_map('trim',(array)$d['salutation']))) : trim((string)$d['salutation']);
-                        foreach (['gender','sex','sexType'] as $gk){ if (!empty($d[$gk])){ $gender = is_array($d[$gk]) ? implode(', ',array_filter(array_map('trim',(array)$d[$gk]))) : trim((string)$d[$gk]); break; } }
-                        if (strlen($gender) > 32) $gender = substr($gender,0,32);
-                        $phones = [];
-                        $pKeys = ['private_phone','mobile_phone','company_phone',
-                                  'phone','privatePhone','phonePrivate','telephone','telephone_number','telephoneNumber',
-                                  'private_telephone','privateTelephone','mobilePhone','mobile','mobile_private','mobilePrivate',
-                                  'mobile_telephone','mobileTelephone','phone_mobile','phoneMobile','phone_home','phoneHome','homePhone'];
-                        if (isset($d['phones']) && is_array($d['phones'])){ foreach($d['phones'] as $p){ if(is_string($p)&&trim($p)!=='') $phones[]=trim($p); if(is_array($p)) foreach($p as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } }
-                        foreach ($pKeys as $pk){ if(!empty($d[$pk])){ if(is_array($d[$pk])){ foreach($d[$pk] as $sub) if(is_string($sub)&&trim($sub)!=='') $phones[]=trim($sub); } else $phones[]=trim((string)$d[$pk]); } }
-                        $phones = array_values(array_filter(array_unique($phones)));
-                        $phone  = substr(implode(', ',array_slice($phones,0,3)),0,120);
-                        $setParts = ['first_name=%s','family_name=%s','age=%d','email_private=%s','zip=%s','city=%s','street=%s','address_suffix=%s','gender=%s','phone=%s','updated_at=%s'];
-                        $params   = [$first,$family,$age,$pemail,$zip,$city,$street,(string)$addrS,$gender,$phone,$now];
-                        if (!empty($dob)&&$dob!=='0000-00-00'&&$dob!=='0000-00-00 00:00:00'){ $setParts[]='date_of_birth=%s'; $params[]=$dob; } else { $setParts[]='date_of_birth=NULL'; }
-                        if ($birthYear !== null){ $setParts[]='birth_year=%d'; $params[]=$birthYear; } else { $setParts[]='birth_year=NULL'; }
-                        $params[] = $mid;
-                        $wpdb->query($wpdb->prepare("UPDATE {$m_table} SET ".implode(',',$setParts)." WHERE member_id=%s",$params));
-                    }
+                    if (is_array($d)) $this->apply_contact_details($mid,$d);
                     $s['counts']['details']++;
                 }
                 $s['member_index']++;
@@ -632,45 +727,10 @@ class EVG_Sync {
                 $now     = current_time('mysql',1);
                 foreach ((array)$items as $entry){
                     if (!is_array($entry)) continue;
-                    $mid = $this->extract_member_id_from_ref($entry['user_object'] ?? null);
-                    if (!$mid) continue;
-                    $field_id = null;
-                    $fieldRef = $entry['customField'] ?? $entry['custom_field'] ?? null;
-                    if (is_string($fieldRef) && $fieldRef !== ''){
-                        if (preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',$fieldRef,$mm)) $field_id=$mm[1]; else $field_id=$fieldRef;
-                    } elseif (is_array($fieldRef)){
-                        if (!empty($fieldRef['id']))  $field_id=(string)$fieldRef['id'];
-                        elseif (!empty($fieldRef['pk'])) $field_id=(string)$fieldRef['pk'];
-                        elseif (!empty($fieldRef['href']) && preg_match('~/custom-field[s]?/([0-9a-zA-Z_-]+)~',(string)$fieldRef['href'],$mm)) $field_id=$mm[1];
-                    }
-                    if (!$field_id) $field_id = $entry['customFieldId'] ?? $entry['fieldId'] ?? null;
-                    if (!$field_id) $field_id = isset($entry['id']) ? (string)$entry['id'] : null;
-                    if (!$field_id) continue;
-                    $field_id = (string)$field_id;
-                    // value
-                    $value_source = null;
-                    if (array_key_exists('value',$entry))       $value_source = $entry['value'];
-                    elseif (array_key_exists('valueText',$entry)) $value_source = $entry['valueText'];
-                    elseif (array_key_exists('value_text',$entry)) $value_source = $entry['value_text'];
-                    if (($value_source === null||$value_source===''||$value_source===[]) && isset($entry['selectOptions']) && is_array($entry['selectOptions'])) $value_source=$entry['selectOptions'];
-                    if (($value_source === null||$value_source===''||$value_source===[]) && !empty($entry['selected_options']) && is_array($entry['selected_options'])){
-                        $value_source = $this->resolve_select_options($entry['selected_options'],$s,$calls);
-                    }
-                    $prepared = $this->prepare_custom_field_value($field_id,$value_source);
-                    if (!$prepared) continue;
-                    // field_label
-                    $field_label = $s['custom_field_labels'][$field_id] ?? '';
-                    if ($field_label === ''){
-                        $field_label = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM {$cf_table} WHERE field_id=%s LIMIT 1",$field_id)) ?: $field_id);
-                        $s['custom_field_labels'][$field_id] = $field_label;
-                    }
-                    $entry_raw = wp_json_encode($entry,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-                    $wpdb->replace($mv_table,['member_id'=>$mid,'field_id'=>$field_id,'value_hash'=>$prepared['hash'],'value_text'=>$prepared['label'],'updated_at'=>$now,'raw'=>$entry_raw],['%s','%s','%s','%s','%s','%s']);
+                    $res = $this->store_member_cf_entry($entry,$s,$calls,$now);
+                    if ($res === null || !$res['stored']) continue;
                     $s['counts']['member_custom_fields']++;
-                    $cv_key = $field_id.'|'.$prepared['hash'];
-                    $wpdb->replace($cv_table,['field_id'=>$field_id,'value_hash'=>$prepared['hash'],'field_label'=>$field_label,'value_label'=>$prepared['label'],'value_raw'=>$prepared['raw'],'updated_at'=>$now],['%s','%s','%s','%s','%s','%s']);
-                    if (!isset($s['custom_field_values_seen'][$cv_key])){
-                        $s['custom_field_values_seen'][$cv_key]=true;
+                    if ($res['new_value']){
                         $s['counts']['custom_field_values']++;
                         if ($s['counts']['custom_field_values'] > ($s['est']['custom_field_values']??1)) $s['est']['custom_field_values']=$s['counts']['custom_field_values'];
                     }
@@ -682,6 +742,8 @@ class EVG_Sync {
                 if ($s['member_index'] >= count($s['member_ids'])){
                     $s['done'] = true;
                     update_option('evg_last_sync_completed', current_time('mysql',1), false);
+                    // Vollständiger Lauf (ohne Cap) = neuer Ausgangspunkt für den Delta-Sync dieser Tabellen
+                    if (empty($s['cap']) && !empty($s['started_at'])) self::set_delta_since($this->table_prefix,(int)$s['started_at']);
                     break;
                 }
                 $mid  = $s['member_ids'][$s['member_index']];
@@ -701,17 +763,7 @@ class EVG_Sync {
                     if (!is_array($g)) continue;
                     $g_mid = $this->extract_member_id_from_ref($g['user_object'] ?? null);
                     if (!$g_mid) continue;
-                    // group id
-                    $gid = null;
-                    $mgRef = $g['member_group'] ?? $g['memberGroup'] ?? null;
-                    if (is_string($mgRef)){
-                        if (preg_match('~/(?:member-group|groups?)/([0-9]+)~',$mgRef,$mm)) $gid=$mm[1];
-                        else { $tail=parse_url($mgRef,PHP_URL_PATH); if($tail){ $parts=explode('/',trim($tail,'/')); $last=end($parts); if(ctype_digit($last)) $gid=$last; } }
-                    } elseif (is_array($mgRef)){
-                        if (!empty($mgRef['id']) && is_numeric($mgRef['id'])) $gid=(string)$mgRef['id'];
-                        elseif (!empty($mgRef['href']) && preg_match('~/(?:member-group|groups?)/([0-9]+)~',(string)$mgRef['href'],$mm)) $gid=$mm[1];
-                    }
-                    if (!$gid && isset($g['groupId']) && is_numeric($g['groupId'])) $gid=(string)$g['groupId'];
+                    $gid = $this->group_id_from_assignment($g);
                     if (!$gid) continue;
                     $group_name = (string)($wpdb->get_var($wpdb->prepare("SELECT name FROM $g_table WHERE group_id=%s LIMIT 1",$gid)) ?? '');
                     $wpdb->replace($x_table,['member_id'=>$g_mid,'group_id'=>$gid,'member_name'=>$member_name,'group_name'=>$group_name,'assigned_at'=>$now],['%s','%s','%s','%s','%s']);
@@ -725,5 +777,316 @@ class EVG_Sync {
         }
         $this->put_state($s);
         return array_merge(['ok'=>true], $this->progress($s));
+    }
+
+    // ── Delta-Sync ───────────────────────────────────────────────────────────
+    //
+    // Statt jedes Mitglied einzeln abzufragen (~3 Aufrufe pro Mitglied) nutzt der
+    // Delta-Sync die Sammel-Endpunkte der API v3.0:
+    //   • geänderte Datensätze über updated_at__gte (Mitglieder, Kontaktdaten, Custom Fields)
+    //   • schlanke ID-Listen (query={…}), um Löschungen und Gruppen-Zuordnungen abzugleichen
+    // Ein Lauf braucht so rund 70–100 Aufrufe statt mehrerer Tausend.
+
+    public static function delta_since_option($prefix){
+        return 'evg_delta_since_'.evg_sanitize_table_prefix($prefix);
+    }
+    public static function get_delta_since($prefix){
+        return (int)get_option(self::delta_since_option($prefix),0);
+    }
+    public static function set_delta_since($prefix,$ts){
+        update_option(self::delta_since_option($prefix),(int)$ts,false);
+    }
+    public static function delta_result_option($prefix){
+        return 'evg_delta_last_result_'.evg_sanitize_table_prefix($prefix);
+    }
+
+    private function short_url($url){
+        return preg_replace('~^https?://[^/]+~','',(string)$url);
+    }
+
+    /** GET mit zusätzlicher Wartezeit bei anhaltendem 429; liefert dekodiertes JSON oder WP_Error. */
+    private function delta_get($url,$deadline){
+        for ($round=0; $round<4; $round++){
+            $resp = evg_http_get($url,$this->headers()); $this->delta_calls++; $this->rate_sleep();
+            if (is_wp_error($resp)) return $resp;
+            $code = wp_remote_retrieve_response_code($resp);
+            if ($code === 429){
+                if (microtime(true) + 20 > $deadline) break;
+                sleep(20);
+                continue;
+            }
+            if ($code<200 || $code>=300) return new WP_Error('evg_http','HTTP '.$code.' bei '.$this->short_url($url));
+            $body = json_decode(wp_remote_retrieve_body($resp),true);
+            if (!is_array($body)) return new WP_Error('evg_json','Ungültige Antwort bei '.$this->short_url($url));
+            return $body;
+        }
+        return new WP_Error('evg_rate','Rate-Limit (429) bei '.$this->short_url($url));
+    }
+
+    /** Alle Seiten eines Sammel-Endpunkts laden; liefert die Einträge oder WP_Error (nie eine Teilliste). */
+    private function delta_list($path,array $params,$deadline){
+        $url = $this->normalize_endpoint($path);
+        $params = array_merge(['limit'=>100],$params);
+        $url .= (strpos($url,'?')===false ? '?' : '&').http_build_query($params,'','&',PHP_QUERY_RFC3986);
+        $items = []; $pages = 0;
+        while ($url){
+            if (microtime(true) > $deadline) return new WP_Error('evg_time','Zeitbudget überschritten');
+            if (++$pages > 500) return new WP_Error('evg_pages','Zu viele Seiten bei '.$this->short_url($path));
+            $body = $this->delta_get($url,$deadline);
+            if (is_wp_error($body)) return $body;
+            foreach ($this->extract_items_from_payload($body) as $it){
+                if (is_array($it)) $items[] = $it;
+            }
+            $url = $this->next_url($this->extract_next_from_payload($body));
+        }
+        return $items;
+    }
+
+    /** Zeilen löschen, deren Schlüssel in $where_sets (Liste von [spalte=>wert]) steht. */
+    private function delete_rows($table,array $where_sets){
+        global $wpdb;
+        $n = 0;
+        foreach ($where_sets as $where){
+            $n += (int)$wpdb->delete($table,$where);
+        }
+        return $n;
+    }
+
+    /** Mitglieder samt Zuordnungen löschen. */
+    private function delete_members(array $member_ids){
+        global $wpdb;
+        foreach (array_chunk($member_ids,200) as $chunk){
+            $ph = implode(',',array_fill(0,count($chunk),'%s'));
+            foreach (['members','member_groups','member_custom_fields'] as $t){
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $wpdb->query($wpdb->prepare("DELETE FROM {$this->table($t)} WHERE member_id IN ($ph)",$chunk));
+            }
+        }
+    }
+
+    /**
+     * Delta-Sync in die Tabellen dieses Präfixes.
+     * Ändert nur, was sich seit dem letzten erfolgreichen Lauf (bzw. vollen Sync) geändert hat,
+     * und gleicht Löschungen über ID-Listen ab. Bricht bei Fehlern ab, ohne den Zeitstempel
+     * weiterzusetzen – der nächste Lauf holt dann alles seit demselben Stand nach.
+     */
+    public function delta_run($time_budget=600){
+        $t0 = microtime(true);
+        $deadline = $t0 + max(60,(int)$time_budget);
+        $this->delta_calls = 0;
+        $lock = 'evg_delta_lock_'.$this->table_prefix;
+
+        $st = $this->get_state();
+        if (!empty($st) && empty($st['done']) && (time() - (int)($st['started_at'] ?? 0)) < 3 * HOUR_IN_SECONDS){
+            $res = ['ok'=>false,'skipped'=>true,'message'=>'Übersprungen: voller Sync für diese Tabellen läuft gerade'];
+        } elseif (get_transient($lock)){
+            $res = ['ok'=>false,'skipped'=>true,'message'=>'Übersprungen: Delta-Sync läuft bereits'];
+        } else {
+            set_transient($lock,1,20 * MINUTE_IN_SECONDS);
+            try {
+                $res = $this->delta_run_inner($deadline);
+            } finally {
+                delete_transient($lock);
+            }
+        }
+        $res['prefix']   = $this->table_prefix;
+        $res['seconds']  = round(microtime(true) - $t0,1);
+        $res['calls']    = $this->delta_calls;
+        $res['finished'] = time();
+        if (empty($res['skipped'])) update_option(self::delta_result_option($this->table_prefix),$res,false);
+        return $res;
+    }
+
+    private function delta_run_inner($deadline){
+        global $wpdb;
+        $this->ensure_custom_field_schema();
+        $run_start = time();
+        $now = current_time('mysql',1);
+
+        $m_table  = $this->table('members');
+        $g_table  = $this->table('groups');
+        $x_table  = $this->table('member_groups');
+        $mv_table = $this->table('member_custom_fields');
+        $cv_table = $this->table('custom_field_values');
+
+        $local_members = (int)$wpdb->get_var("SELECT COUNT(*) FROM {$m_table}");
+        if ($local_members === 0){
+            return ['ok'=>false,'message'=>'Tabellen sind leer – zuerst einen vollständigen Sync ausführen'];
+        }
+        $since_ts = self::get_delta_since($this->table_prefix);
+        if ($since_ts <= 0) $since_ts = $run_start - 3 * DAY_IN_SECONDS;
+        // 10 Minuten Überlappung, damit nichts zwischen zwei Läufen verloren geht
+        $since = gmdate('Y-m-d\TH:i:s\Z',$since_ts - 10 * MINUTE_IN_SECONDS);
+
+        $s = ['custom_field_types'=>[],'custom_field_labels'=>[],'select_option_labels'=>[],'custom_field_values_seen'=>[]];
+        $stats = [];
+        $fail = function($err) use (&$stats){
+            return ['ok'=>false,'message'=>is_wp_error($err) ? $err->get_error_message() : (string)$err,'stats'=>$stats];
+        };
+
+        // 1) Gruppen (wenige Seiten) – vollständig upserten, entfernte Gruppen löschen
+        $groups = $this->delta_list(get_option('evg_groups_path','/api/v3.0/member-group'),[],$deadline);
+        if (is_wp_error($groups)) return $fail($groups);
+        $remote_groups = [];
+        foreach ($groups as $g){
+            $gid = $this->upsert_group($g,$now);
+            if ($gid !== null) $remote_groups[$gid] = true;
+        }
+        $stats['groups'] = count($remote_groups);
+        $stats['groups_deleted'] = 0;
+        if ($remote_groups){
+            $gone = array_diff($wpdb->get_col("SELECT group_id FROM {$g_table}"),array_keys($remote_groups));
+            $stats['groups_deleted'] = $this->delete_rows($g_table,array_map(function($id){ return ['group_id'=>$id]; },$gone));
+        }
+
+        // 2) Custom-Field-Definitionen (für Labels/Typen)
+        $fields = $this->delta_list(get_option('evg_custom_fields_path','/api/v3.0/custom-field'),[],$deadline);
+        if (is_wp_error($fields)) return $fail($fields);
+        foreach ($fields as $f) $this->upsert_custom_field($f,$s,$now);
+        $stats['custom_fields'] = count($s['custom_field_labels']);
+
+        // 3) Alle Mitglieds-IDs → gelöschte Mitglieder erkennen
+        $members_path = get_option('evg_members_path','/api/v3.0/member');
+        $id_rows = $this->delta_list($members_path,['query'=>'{id}'],$deadline);
+        if (is_wp_error($id_rows)) return $fail($id_rows);
+        $remote_ids = [];
+        foreach ($id_rows as $r){ if (isset($r['id'])) $remote_ids[(string)$r['id']] = true; }
+        if (count($remote_ids) < 0.5 * $local_members){
+            return $fail(sprintf('Mitgliederliste unplausibel kurz (%d statt ca. %d) – Abbruch ohne Löschungen',count($remote_ids),$local_members));
+        }
+        $existing = array_fill_keys($wpdb->get_col("SELECT member_id FROM {$m_table}"),true);
+        $removed  = array_keys(array_diff_key($existing,$remote_ids));
+        if ($removed) $this->delete_members($removed);
+        $stats['members_total']   = count($remote_ids);
+        $stats['members_deleted'] = count($removed);
+
+        // 4) Geänderte Mitglieder (Mitgliedsnummer, Verweis auf Kontaktdaten, neue Mitglieder)
+        $changed = $this->delta_list($members_path,['updated_at__gte'=>$since],$deadline);
+        if (is_wp_error($changed)) return $fail($changed);
+        $changed_ids = [];
+        foreach ($changed as $m){
+            $mid = $this->upsert_member_row($m,$now);
+            if ($mid !== null) $changed_ids[$mid] = true;
+        }
+        $new_ids = array_diff_key($changed_ids,$existing);
+        $stats['members_changed'] = count($changed_ids);
+        $stats['members_new']     = count($new_ids);
+
+        // 5) Geänderte Kontaktdaten – nur die benötigten Felder (keine Bankdaten)
+        $cd_query = '{id,member,first_name,family_name,age,date_of_birth,private_email,primary_email,salutation,zip,city,street,address_suffix,private_phone,mobile_phone,company_phone}';
+        $cd_path  = $this->bulk_url_from_path('evg_contact_details_path','/api/v3.0/contact-details/{id}');
+        $cds = $this->delta_list($cd_path,['updated_at__gte'=>$since,'query'=>$cd_query],$deadline);
+        if (is_wp_error($cds)) return $fail($cds);
+        $cd_map = [];
+        foreach ($wpdb->get_results("SELECT member_id,contact_details FROM {$m_table}",ARRAY_A) as $r){
+            $cid = $this->extract_cd_id($r['contact_details']);
+            if ($cid) $cd_map[$cid] = $r['member_id'];
+        }
+        $cd_done = [];
+        foreach ($cds as $d){
+            $mid = $this->extract_member_id_from_ref($d['member'] ?? null);
+            if (!$mid || !isset($remote_ids[$mid])) $mid = $cd_map[(string)($d['id'] ?? '')] ?? null;
+            if (!$mid) continue; // Kontakt ohne Mitgliedschaft
+            $this->apply_contact_details($mid,$d);
+            $cd_done[$mid] = true;
+        }
+        // Neue Mitglieder, deren Kontaktdaten nicht frisch geändert wurden, einzeln nachladen
+        foreach (array_keys($new_ids) as $mid){
+            if (isset($cd_done[$mid])) continue;
+            $cd = (string)$wpdb->get_var($wpdb->prepare("SELECT contact_details FROM {$m_table} WHERE member_id=%s",$mid));
+            if ($cd === '') continue;
+            $url = (strpos($cd,'http')===0 ? $cd : $this->base().$cd);
+            $d = $this->delta_get($url.(strpos($url,'?')===false?'?':'&').'query='.rawurlencode($cd_query),$deadline);
+            if (is_wp_error($d)) return $fail($d);
+            $this->apply_contact_details($mid,$d);
+            $cd_done[$mid] = true;
+        }
+        $stats['contacts_updated'] = count($cd_done);
+
+        // 6) Gruppen-Zuordnungen: schlanke Gesamtliste → Tabelle abgleichen
+        $mg_path = $this->bulk_url_from_path('evg_member_groups_path','/api/v3.0/member-group-assignment?user_object={id}');
+        $assign  = $this->delta_list($mg_path,['query'=>'{id,user_object,member_group}'],$deadline);
+        if (is_wp_error($assign)) return $fail($assign);
+        $remote_pairs = [];
+        foreach ($assign as $a){
+            $mid = $this->extract_member_id_from_ref($a['user_object'] ?? null);
+            $gid = $this->group_id_from_assignment($a);
+            if ($mid && $gid && isset($remote_ids[$mid])) $remote_pairs[$mid.'|'.$gid] = [$mid,$gid];
+        }
+        $local_pairs = [];
+        foreach ($wpdb->get_results("SELECT member_id,group_id FROM {$x_table}",ARRAY_A) as $r){
+            $local_pairs[$r['member_id'].'|'.$r['group_id']] = [$r['member_id'],$r['group_id']];
+        }
+        if (count($remote_pairs) < 0.5 * count($local_pairs)){
+            return $fail(sprintf('Gruppen-Zuordnungen unplausibel wenige (%d statt ca. %d) – Abbruch ohne Löschungen',count($remote_pairs),count($local_pairs)));
+        }
+        $add = array_diff_key($remote_pairs,$local_pairs);
+        $del = array_diff_key($local_pairs,$remote_pairs);
+        if ($add){
+            $names = [];
+            foreach ($wpdb->get_results("SELECT member_id,first_name,family_name FROM {$m_table}",ARRAY_A) as $r){
+                $names[$r['member_id']] = trim(($r['first_name'] ?? '').' '.($r['family_name'] ?? ''));
+            }
+            $gnames = [];
+            foreach ($wpdb->get_results("SELECT group_id,name FROM {$g_table}",ARRAY_A) as $r) $gnames[$r['group_id']] = (string)$r['name'];
+            foreach ($add as list($mid,$gid)){
+                $wpdb->replace($x_table,['member_id'=>$mid,'group_id'=>$gid,'member_name'=>$names[$mid] ?? '','group_name'=>$gnames[$gid] ?? '','assigned_at'=>$now],['%s','%s','%s','%s','%s']);
+            }
+        }
+        $this->delete_rows($x_table,array_map(function($p){ return ['member_id'=>$p[0],'group_id'=>$p[1]]; },array_values($del)));
+        // Namen in den Zuordnungen nachziehen (geänderte Kontaktdaten / umbenannte Gruppen)
+        $wpdb->query("UPDATE {$x_table} x JOIN {$m_table} m ON m.member_id=x.member_id
+                      SET x.member_name=TRIM(CONCAT(IFNULL(m.first_name,''),' ',IFNULL(m.family_name,'')))
+                      WHERE x.member_name <> TRIM(CONCAT(IFNULL(m.first_name,''),' ',IFNULL(m.family_name,'')))");
+        $wpdb->query("UPDATE {$x_table} x JOIN {$g_table} g ON g.group_id=x.group_id SET x.group_name=g.name WHERE x.group_name <> g.name");
+        $stats['group_assignments']         = count($remote_pairs);
+        $stats['group_assignments_added']   = count($add);
+        $stats['group_assignments_removed'] = count($del);
+
+        // 7) Custom-Field-Werte: geänderte Zuordnungen schreiben, entfernte über die ID-Liste löschen
+        $mcf_path = $this->bulk_url_from_path('evg_member_custom_fields_path','/api/v3.0/member-custom-field-assignment?user_object={id}');
+        $cf_changed = $this->delta_list($mcf_path,['updated_at__gte'=>$since],$deadline);
+        if (is_wp_error($cf_changed)) return $fail($cf_changed);
+        $opt_calls = 0; $cf_written = 0; $cf_cleared = 0;
+        foreach ($cf_changed as $e){
+            $mid = $this->extract_member_id_from_ref($e['user_object'] ?? null);
+            if (!$mid || !isset($remote_ids[$mid])) continue;
+            $res = $this->store_member_cf_entry($e,$s,$opt_calls,$now);
+            if ($res === null) continue;
+            if ($res['stored']) { $cf_written++; continue; }
+            $cf_cleared += (int)$wpdb->delete($mv_table,['member_id'=>$res['mid'],'field_id'=>$res['fid']]);
+        }
+        $this->delta_calls += $opt_calls;
+
+        $cf_all = $this->delta_list($mcf_path,['query'=>'{id,user_object,custom_field}'],$deadline);
+        if (is_wp_error($cf_all)) return $fail($cf_all);
+        $remote_cf = [];
+        foreach ($cf_all as $e){
+            $mid = $this->extract_member_id_from_ref($e['user_object'] ?? null);
+            $fid = $this->field_id_from_assignment($e);
+            if ($mid && $fid) $remote_cf[$mid.'|'.$fid] = true;
+        }
+        $local_cf = [];
+        foreach ($wpdb->get_results("SELECT member_id,field_id FROM {$mv_table}",ARRAY_A) as $r){
+            $local_cf[$r['member_id'].'|'.$r['field_id']] = [$r['member_id'],$r['field_id']];
+        }
+        if (count($remote_cf) < 0.5 * count($local_cf)){
+            return $fail(sprintf('Custom-Field-Zuordnungen unplausibel wenige (%d statt ca. %d) – Abbruch ohne Löschungen',count($remote_cf),count($local_cf)));
+        }
+        $cf_gone = array_diff_key($local_cf,$remote_cf);
+        $cf_cleared += $this->delete_rows($mv_table,array_map(function($p){ return ['member_id'=>$p[0],'field_id'=>$p[1]]; },array_values($cf_gone)));
+        // Werte-Katalog (Filteroptionen) von nicht mehr verwendeten Einträgen befreien
+        $wpdb->query("DELETE cv FROM {$cv_table} cv LEFT JOIN {$mv_table} mv ON mv.field_id=cv.field_id AND mv.value_hash=cv.value_hash WHERE mv.member_id IS NULL");
+        $stats['custom_values_written'] = $cf_written;
+        $stats['custom_values_removed'] = $cf_cleared;
+
+        self::set_delta_since($this->table_prefix,$run_start);
+        update_option('evg_last_delta_sync',current_time('mysql',1),false);
+
+        $msg = sprintf('OK: %d Mitglieder (%d geändert, %d neu, %d gelöscht), %d Kontaktdaten, Gruppen +%d/−%d, Zusatzfelder %d geschrieben/%d entfernt',
+            $stats['members_total'],$stats['members_changed'],$stats['members_new'],$stats['members_deleted'],
+            $stats['contacts_updated'],$stats['group_assignments_added'],$stats['group_assignments_removed'],
+            $cf_written,$cf_cleared);
+        return ['ok'=>true,'message'=>$msg,'since'=>$since,'stats'=>$stats];
     }
 }

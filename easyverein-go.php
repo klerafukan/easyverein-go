@@ -27,6 +27,7 @@ class EVG_Plugin {
     private const CRON_HOOK        = 'evg_nightly_sync';
     private const EVENTS_CRON_HOOK = 'evg_events_sync';
     private const TOKEN_CRON_HOOK  = 'evg_token_refresh';
+    private const DELTA_CRON_HOOK  = 'evg_delta_sync';
     private const NIGHTLY_TABLE_PREFIX = 'evg_nightly';
 
     private static $instance = null;
@@ -40,6 +41,11 @@ class EVG_Plugin {
         add_action(self::CRON_HOOK,[$this,'run_nightly_sync']);
         add_action(self::EVENTS_CRON_HOOK,[$this,'run_events_sync_cron']);
         add_action(self::TOKEN_CRON_HOOK,'evg_cron_token_refresh');
+        add_action(self::DELTA_CRON_HOOK,[$this,'run_delta_sync_cron']);
+        // Eigenes Intervall dauerhaft registrieren – sonst schlägt das Neu-Einplanen
+        // von evg_events_sync fehl ("invalid_schedule") und flutet das Debug-Log.
+        add_filter('cron_schedules',[$this,'register_cron_schedules']);
+        add_action('update_option_evg_delta_sync_enabled',[$this,'maybe_schedule_cron']);
         add_action('add_option_evg_api_key','evg_mark_api_key_refreshed');
         add_action('update_option_evg_api_key','evg_mark_api_key_refreshed');
         add_action('update_option_evg_nightly_sync_enabled',[$this,'handle_nightly_toggle'],10,3);
@@ -62,6 +68,7 @@ class EVG_Plugin {
             'evg_sync_calls_per_tick' => 5,
             'evg_tick_pause_ms'       => 900,
             'evg_nightly_sync_enabled'=> 0,
+            'evg_delta_sync_enabled'  => 1,
             'evg_manual_sync_table_prefix'=> 'evg',
             'evg_nightly_sync_table_prefix'=> self::NIGHTLY_TABLE_PREFIX,
             'evg_sync_report_email' => ''
@@ -477,15 +484,12 @@ class EVG_Plugin {
             wp_schedule_event($this->next_cron_timestamp(),'daily',self::CRON_HOOK);
         }
     }
+    public function register_cron_schedules($s){
+        $s['evg_fifteen_minutes']=['interval'=>900,'display'=>'Alle 15 Minuten (EVG)'];
+        return $s;
+    }
     private function schedule_events_cron(){
         if(!wp_next_scheduled(self::EVENTS_CRON_HOOK)){
-            // Alle 15 Minuten – WP-interne Häufigkeit registrieren
-            if(!wp_get_schedule('evg_fifteen_minutes')){
-                add_filter('cron_schedules',function($s){
-                    $s['evg_fifteen_minutes']=['interval'=>900,'display'=>'Alle 15 Minuten (EVG)'];
-                    return $s;
-                });
-            }
             wp_schedule_event(time(),'evg_fifteen_minutes',self::EVENTS_CRON_HOOK);
         }
     }
@@ -493,6 +497,7 @@ class EVG_Plugin {
         wp_clear_scheduled_hook(self::CRON_HOOK);
         wp_clear_scheduled_hook(self::EVENTS_CRON_HOOK);
         wp_clear_scheduled_hook(self::TOKEN_CRON_HOOK);
+        wp_clear_scheduled_hook(self::DELTA_CRON_HOOK);
     }
     public function maybe_schedule_cron(){
         if(get_option('evg_nightly_sync_enabled',0)){
@@ -504,6 +509,43 @@ class EVG_Plugin {
         if(!wp_next_scheduled(self::TOKEN_CRON_HOOK)){
             wp_schedule_event(time() + HOUR_IN_SECONDS,'daily',self::TOKEN_CRON_HOOK);
         }
+        if(get_option('evg_delta_sync_enabled',1)){
+            if(!wp_next_scheduled(self::DELTA_CRON_HOOK)){
+                wp_schedule_event(time() + 5 * MINUTE_IN_SECONDS,'hourly',self::DELTA_CRON_HOOK);
+            }
+        } else {
+            wp_clear_scheduled_hook(self::DELTA_CRON_HOOK);
+        }
+    }
+
+    /** Präfix der Tabellen, aus denen die Seite liest (Ziel des Delta-Syncs). */
+    public static function live_table_prefix(){
+        $p = EVG_Sync::sanitize_table_prefix(get_option('evg_manual_sync_table_prefix','evg'));
+        return $p === '' ? 'evg' : $p;
+    }
+
+    /** Delta-Sync ausführen und eine Zeile ins Monats-Log schreiben. */
+    public static function run_delta_sync($time_budget = 600){
+        if(function_exists('set_time_limit')){ @set_time_limit($time_budget + 300); }
+        $sync = new EVG_Sync(self::live_table_prefix());
+        $res  = $sync->delta_run($time_budget);
+        $line = sprintf('[%s] %s | %.1fs | %d Aufrufe | %s',
+            date('Y-m-d H:i:s'), $res['ok'] ? 'OK' : (!empty($res['skipped']) ? 'SKIP' : 'FEHLER'),
+            $res['seconds'], $res['calls'], $res['message']);
+        @file_put_contents(evg_debug_dir().'/delta-'.date('Ym').'.log', $line."\n", FILE_APPEND | LOCK_EX);
+        return $res;
+    }
+
+    /** WP-Cron-Callback (stündlich). */
+    public function run_delta_sync_cron(){
+        if(!get_option('evg_delta_sync_enabled',1)) return;
+        self::run_delta_sync();
+    }
+
+    /** Für System-Cron: wp eval 'EVG_Plugin::get_instance()->run_delta_sync_cli();' --path=… */
+    public function run_delta_sync_cli(){
+        $res = self::run_delta_sync(1800);
+        echo '[EVG Delta] '.($res['ok'] ? 'OK' : 'FEHLER').': '.$res['message']."\n";
     }
     public function handle_nightly_toggle($old_value,$value,$option){
         if((int)$value){
@@ -610,6 +652,13 @@ class EVG_Plugin {
         $this->ensure_tables_for_prefix($nightly_prefix);
 
         update_option('evg_last_table_swap', current_time('mysql', 1), false);
+
+        // Live-Tabellen haben jetzt den Stand vom Start des Nightly-Laufs – der Delta-Sync
+        // muss Änderungen ab diesem Zeitpunkt erneut holen.
+        $nightly_state = get_option((new EVG_Sync($nightly_prefix))->get_state_option_key(), []);
+        $nightly_start = is_array($nightly_state) ? (int)($nightly_state['started_at'] ?? 0) : 0;
+        $live_since    = EVG_Sync::get_delta_since($live_prefix);
+        EVG_Sync::set_delta_since($live_prefix, $nightly_start > 0 ? ($live_since > 0 ? min($live_since, $nightly_start) : $nightly_start) : 0);
         $msg = sprintf(
             'Swap erfolgreich: %s → %s (%d alte Tabellen gelöscht, Nightly-Tabellen neu angelegt)',
             $nightly_prefix, $live_prefix, $dropped
