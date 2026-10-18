@@ -229,4 +229,4 @@ Folgende GitHub-Secrets müssen im Repository hinterlegt sein:
 
 ---
 
-Plugin-Version: **3.3.5**
+Plugin-Version: **3.3.6**
