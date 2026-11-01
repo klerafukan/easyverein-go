@@ -14,6 +14,11 @@ Freitextsuche und Seiten von zwanzig Anträgen erschließen auch die Historie mi
 Bearbeiter und Entscheidungsbegründung. Ein unbestätigter Schreibversuch bietet
 stattdessen **Mitgliedschaft prüfen**. Die Konfiguration liegt im separaten Reiter
 **Einstellungen**. Die WordPress-Freigabe benötigt keine Firebase-Einrichtung.
+In den Einstellungen lassen sich alle Gruppen gemeinsam als beantragbar auswählen
+oder abwählen. Einzelne Häkchen können danach als Ausnahmen entfernt werden;
+der Zähler zeigt die aktuelle Auswahl. Genehmiger und Zahlungseinstellungen
+werden durch die Sammelauswahl nicht geändert. Erst „Einstellungen speichern“
+übernimmt die Auswahl ins Backend.
 
 Das Vereinsmitglied wird aus `evg_member_id` des angemeldeten WP-Kontos bestimmt.
 Ein Antrag erzeugt zunächst nur einen Datensatz. Bei Genehmigung wird die

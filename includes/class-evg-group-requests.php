@@ -7,6 +7,7 @@ class EVG_Group_Requests {
         add_action('init', [__CLASS__, 'ensure_table']);
         add_action('rest_api_init', [$this, 'routes']);
         add_action('admin_menu', [$this, 'menu']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
         add_action('admin_post_evg_group_join_settings', [$this, 'save_settings']);
         add_action('admin_post_evg_group_join_decision', [$this, 'save_decision']);
     }
@@ -245,6 +246,10 @@ class EVG_Group_Requests {
             : (int)$row['requested_by']===$user_id && in_array($row['status'],['approved','rejected'],true);
     }
     public function menu() { add_submenu_page(EVG_SLUG,'Gruppenanträge','Gruppenanträge','manage_options','evg-group-requests',[$this,'admin_page']); }
+    public function enqueue_admin_assets($hook) {
+        if ($hook !== 'easyverein-go_page_evg-group-requests') return;
+        wp_enqueue_script('evg-group-requests',EVG_URL.'assets/admin/evg-group-requests.js',[],EVG_VERSION,true);
+    }
     public function save_settings() {
         if (!current_user_can('manage_options')) wp_die('Nicht erlaubt.',403);
         check_admin_referer('evg_group_join_settings');
@@ -268,10 +273,11 @@ class EVG_Group_Requests {
         if (isset($_GET['saved'])) echo '<div class="notice notice-success inline"><p>Einstellungen gespeichert.</p></div>';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><input type="hidden" name="action" value="evg_group_join_settings">';
         wp_nonce_field('evg_group_join_settings');
-        echo '<table class="widefat"><thead><tr><th>Beantragbar</th><th>Gruppe</th><th>Genehmiger</th><th>Gruppenzahlungen aktivieren</th></tr></thead><tbody>';
+        echo '<div data-evg-group-selection hidden><p><button type="button" class="button" data-evg-select-all>Alle Gruppen auswählen</button> <button type="button" class="button" data-evg-deselect-all>Alle abwählen</button> <span data-evg-selection-count role="status" aria-live="polite"></span></p><p>Wähle alle Gruppen aus und entferne anschließend einzelne Häkchen als Ausnahmen. Übernommen wird die Auswahl erst mit „Einstellungen speichern“.</p></div>';
+        echo '<table class="widefat" data-evg-group-rules><thead><tr><th><label data-evg-select-header hidden><input type="checkbox" data-evg-toggle-all aria-label="Alle Gruppen als beantragbar auswählen oder abwählen"> </label>Beantragbar</th><th>Gruppe</th><th>Genehmiger</th><th>Gruppenzahlungen aktivieren</th></tr></thead><tbody>';
         foreach ($groups as $group) {
             $id=(string)$group['group_id']; $rule=$rules[$id] ?? [];
-            echo '<tr><td><input type="checkbox" name="rules['.esc_attr($id).'][enabled]" value="1" '.checked(isset($rules[$id]),true,false).'></td><td>'.esc_html($group['name'] ?: $id).'</td><td><select multiple size="4" name="rules['.esc_attr($id).'][approvers][]" aria-label="Genehmiger für '.esc_attr($group['name']).'">';
+            echo '<tr><td><input type="checkbox" data-evg-group-enabled aria-label="'.esc_attr(($group['name'] ?: $id).' als beantragbar freigeben').'" name="rules['.esc_attr($id).'][enabled]" value="1" '.checked(isset($rules[$id]),true,false).'></td><td>'.esc_html($group['name'] ?: $id).'</td><td><select multiple size="4" name="rules['.esc_attr($id).'][approvers][]" aria-label="Genehmiger für '.esc_attr($group['name']).'">';
             foreach ($users as $user) echo '<option value="'.(int)$user->ID.'" '.selected(in_array((int)$user->ID,array_map('intval',(array)($rule['approvers'] ?? [])),true),true,false).'>'.esc_html($user->display_name).'</option>';
             echo '</select></td><td><input type="checkbox" name="rules['.esc_attr($id).'][payment_active]" value="1" '.checked(!empty($rule['payment_active']),true,false).'></td></tr>';
         }
