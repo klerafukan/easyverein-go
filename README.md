@@ -256,4 +256,4 @@ Gruppenanträge, mobile Freigaben und die Push-Warteschlange sind in
 
 ---
 
-Plugin-Version: **3.3.11**
+Plugin-Version: **3.3.12**
