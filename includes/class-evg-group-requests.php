@@ -8,6 +8,7 @@ class EVG_Group_Requests {
         add_action('rest_api_init', [$this, 'routes']);
         add_action('admin_menu', [$this, 'menu']);
         add_action('admin_post_evg_group_join_settings', [$this, 'save_settings']);
+        add_action('admin_post_evg_group_join_decision', [$this, 'save_decision']);
     }
     public static function ensure_table($force = false) {
         if (!$force && (int)get_option('evg_group_join_schema', 0) === 1) return;
@@ -257,14 +258,14 @@ class EVG_Group_Requests {
         update_option(self::RULES,$rules,false);
         if (!empty($_POST['clear_expo_access_token'])) delete_option('evg_expo_access_token');
         elseif (!empty($_POST['expo_access_token'])) update_option('evg_expo_access_token',trim((string)wp_unslash($_POST['expo_access_token'])),false);
-        wp_safe_redirect(admin_url('admin.php?page=evg-group-requests&saved=1')); exit;
+        wp_safe_redirect(admin_url('admin.php?page=evg-group-requests&tab=settings&saved=1')); exit;
     }
-    public function admin_page() {
-        if (!current_user_can('manage_options')) return;
+    private function render_settings() {
         global $wpdb;
         $rules=self::rules(); $users=get_users(['orderby'=>'display_name']);
         $groups=$wpdb->get_results("SELECT group_id,name FROM {$wpdb->prefix}evg_groups ORDER BY name",ARRAY_A);
-        echo '<div class="wrap"><h1>Gruppenanträge</h1><p>Beantragbare EasyVerein-Gruppen und zuständige Genehmiger. Administratoren dürfen alle Anträge außer eigenen bearbeiten. Die Freigabe erfolgt in der App unter Gruppen → Freigaben.</p>';
+        echo '<h2>Einstellungen</h2><p>Beantragbare EasyVerein-Gruppen und zuständige Genehmiger. Administratoren dürfen alle Anträge außer eigenen bearbeiten. Freigaben sind hier unter Anträge und in der App unter Gruppen → Freigaben möglich.</p>';
+        if (isset($_GET['saved'])) echo '<div class="notice notice-success inline"><p>Einstellungen gespeichert.</p></div>';
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><input type="hidden" name="action" value="evg_group_join_settings">';
         wp_nonce_field('evg_group_join_settings');
         echo '<table class="widefat"><thead><tr><th>Beantragbar</th><th>Gruppe</th><th>Genehmiger</th><th>Gruppenzahlungen aktivieren</th></tr></thead><tbody>';
@@ -277,8 +278,92 @@ class EVG_Group_Requests {
         echo '</tbody></table><h2>Expo Push</h2><p>Optionaler Expo Access Token bei aktivierter Push-Sicherheit. Bereits gespeicherte Tokens werden nicht angezeigt.</p><input type="password" autocomplete="new-password" name="expo_access_token" value=""><label><input type="checkbox" name="clear_expo_access_token" value="1"> Gespeicherten Expo-Token löschen</label>';
         submit_button('Einstellungen speichern'); echo '</form><h2>Push-Status</h2>';
         foreach ((array)$wpdb->get_results("SELECT status,COUNT(*) AS n FROM {$wpdb->prefix}evg_app_push_jobs GROUP BY status",ARRAY_A) as $item) echo '<p>'.esc_html($item['status']).': '.(int)$item['n'].'</p>';
-        echo '<h2>Letzte Anträge</h2><table class="widefat"><thead><tr><th>Mitglied</th><th>Gruppe</th><th>Status</th><th>Hinweis</th></tr></thead><tbody>';
-        foreach ((array)$wpdb->get_results('SELECT * FROM '.self::table().' ORDER BY id DESC LIMIT 50',ARRAY_A) as $row) echo '<tr><td>'.esc_html($row['member_name']).'</td><td>'.esc_html($row['group_label']).'</td><td>'.esc_html($row['status']).'</td><td>'.esc_html($row['last_error']).'</td></tr>';
-        echo '</tbody></table></div>';
+    }
+    /** Gleicher Entscheidungsweg wie REST, zusätzlich mit WordPress-Adminrecht und CSRF-Prüfung. */
+    public function admin_decision(array $input) {
+        if (!current_user_can('manage_options')) return self::error('evg_join_forbidden','Keine Berechtigung für die Antragsverwaltung.',403);
+        $id = absint($input['request_id'] ?? 0);
+        if (!$id || !isset($input['_wpnonce']) || !is_string($input['_wpnonce']) || !wp_verify_nonce($input['_wpnonce'],'evg_group_join_decision_'.$id)) return self::error('evg_join_nonce','Die Sicherheitsprüfung ist abgelaufen. Bitte die Antragsliste neu laden.',403);
+        $action = isset($input['decision']) && is_string($input['decision']) ? $input['decision'] : '';
+        if (!in_array($action,['approve','reject'],true)) return self::error('evg_join_action','Ungültige Entscheidung.');
+        $note = isset($input['note']) && is_string($input['note']) ? sanitize_textarea_field($input['note']) : '';
+        return $this->change_status($id,$action,$note);
+    }
+    public function save_decision() {
+        $result = $this->admin_decision(wp_unslash($_POST));
+        $args = ['page'=>'evg-group-requests'];
+        if (is_wp_error($result)) {
+            $args['result']='error'; $args['message']=$result->get_error_message();
+        } else $args['result']=$result->get_data()['status'];
+        wp_safe_redirect(add_query_arg($args,admin_url('admin.php'))); exit;
+    }
+    public function admin_page() {
+        if (!current_user_can('manage_options')) return;
+        $settings = isset($_GET['tab']) && $_GET['tab']==='settings';
+        $base = admin_url('admin.php?page=evg-group-requests');
+        echo '<div class="wrap"><h1>Gruppenanträge</h1><nav class="nav-tab-wrapper" aria-label="Gruppenanträge">';
+        echo '<a class="nav-tab '.(!$settings ? 'nav-tab-active' : '').'" href="'.esc_url($base).'">Anträge</a>';
+        echo '<a class="nav-tab '.($settings ? 'nav-tab-active' : '').'" href="'.esc_url(add_query_arg('tab','settings',$base)).'">Einstellungen</a></nav>';
+        if ($settings) $this->render_settings(); else $this->render_requests();
+        echo '</div>';
+    }
+    private function render_requests() {
+        global $wpdb;
+        $labels = ['pending'=>'Wartet auf Freigabe','processing'=>'Mitgliedschaft prüfen','approved'=>'Genehmigt','rejected'=>'Abgelehnt','withdrawn'=>'Zurückgezogen'];
+        $filters = ['open'=>'Offene Anträge','all'=>'Alle Anträge'] + $labels;
+        $status = isset($_GET['status']) && is_string($_GET['status']) && isset($filters[$_GET['status']]) ? $_GET['status'] : 'open';
+        $search = isset($_GET['s']) && is_string($_GET['s']) ? sanitize_text_field(wp_unslash($_GET['s'])) : '';
+        $page = max(1,absint($_GET['paged'] ?? 1));
+        $where = $status==='open' ? "status IN ('pending','processing')" : ($status==='all' ? '1=1' : $wpdb->prepare('status=%s',$status));
+        if ($search!=='') {
+            $like='%'.$wpdb->esc_like($search).'%';
+            $where.=$wpdb->prepare(' AND (member_name LIKE %s OR member_id LIKE %s OR group_label LIKE %s OR note LIKE %s)',$like,$like,$like,$like);
+        }
+        $total=(int)$wpdb->get_var('SELECT COUNT(*) FROM '.self::table().' WHERE '.$where);
+        $pages=max(1,(int)ceil($total/20)); $page=min($page,$pages);
+        $rows=$wpdb->get_results($wpdb->prepare('SELECT * FROM '.self::table()." WHERE {$where} ORDER BY requested_at DESC,id DESC LIMIT 20 OFFSET %d",($page-1)*20),ARRAY_A);
+        echo '<h2>Anträge verwalten</h2><p>Prüfe den Antrag und bestätige die Gruppenmitgliedschaft. Eine Genehmigung trägt die Mitgliedschaft direkt in EasyVerein ein.</p>';
+        $result=isset($_GET['result']) && is_string($_GET['result']) ? $_GET['result'] : '';
+        if (in_array($result,['approved','rejected'],true)) echo '<div class="notice notice-success inline"><p>'.($result==='approved' ? 'Die Mitgliedschaft wurde in EasyVerein bestätigt und der Antrag genehmigt.' : 'Der Antrag wurde abgelehnt.').'</p></div>';
+        if ($result==='error') {
+            $message=isset($_GET['message']) && is_string($_GET['message']) ? sanitize_text_field(wp_unslash($_GET['message'])) : 'Die Entscheidung konnte nicht gespeichert werden.';
+            echo '<div class="notice notice-error inline"><p>'.esc_html($message).'</p></div>';
+        }
+        echo '<form method="get"><input type="hidden" name="page" value="evg-group-requests"><p><label for="evg-join-status">Status </label><select id="evg-join-status" name="status">';
+        foreach ($filters as $value=>$label) echo '<option value="'.esc_attr($value).'" '.selected($status,$value,false).'>'.esc_html($label).'</option>';
+        echo '</select> <label class="screen-reader-text" for="evg-join-search">Mitglied, Gruppe oder Nachricht suchen</label><input type="search" id="evg-join-search" name="s" value="'.esc_attr($search).'" placeholder="Mitglied oder Gruppe suchen"> <button class="button">Filtern</button></p></form>';
+        echo '<p>'.(int)$total.' Anträge · Seite '.(int)$page.' von '.(int)$pages.'</p><table class="widefat striped"><thead><tr><th>Antrag</th><th>Mitglied</th><th>Gruppe und Nachricht</th><th>Status und Entscheidung</th></tr></thead><tbody>';
+        if (!$rows) echo '<tr><td colspan="4">Keine Anträge für diese Auswahl vorhanden.</td></tr>';
+        foreach ((array)$rows as $row) {
+            $requester=get_userdata((int)$row['requested_by']);
+            $reviewer=$row['reviewed_by'] ? get_userdata((int)$row['reviewed_by']) : false;
+            $date=get_date_from_gmt($row['requested_at'],get_option('date_format').' '.get_option('time_format'));
+            echo '<tr><td>#'.(int)$row['id'].'<br>'.esc_html($date).'</td><td><strong>'.esc_html($row['member_name']).'</strong><br>Mitglieds-ID: '.esc_html($row['member_id']).'<br>Konto: '.esc_html($requester ? $requester->display_name : 'Gelöscht').'</td>';
+            echo '<td><strong>'.esc_html($row['group_label']).'</strong><p style="white-space:pre-wrap">'.esc_html($row['note'] ?: 'Keine Nachricht').'</p><p>Gruppenzahlungen: '.(!empty($row['payment_active']) ? 'Bei Genehmigung aktivieren (vom Antragsteller bestätigt)' : 'Nicht aktivieren').'</p></td>';
+            echo '<td><strong>'.esc_html($labels[$row['status']] ?? $row['status']).'</strong>';
+            if ($reviewer) echo '<p>Bearbeitet von '.esc_html($reviewer->display_name).' · '.esc_html(get_date_from_gmt($row['reviewed_at'],get_option('date_format').' '.get_option('time_format'))).'</p>';
+            if ($row['review_note']) echo '<p style="white-space:pre-wrap">'.esc_html($row['review_note']).'</p>';
+            if ($row['last_error']) echo '<p role="alert">'.esc_html($row['last_error']).'</p>';
+            if (in_array($row['status'],['pending','processing'],true)) {
+                if ((int)$row['requested_by']===get_current_user_id()) echo '<p>Eigene Anträge müssen von einer anderen berechtigten Person bearbeitet werden.</p>';
+                else {
+                    echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><input type="hidden" name="action" value="evg_group_join_decision"><input type="hidden" name="request_id" value="'.(int)$row['id'].'">';
+                    wp_nonce_field('evg_group_join_decision_'.$row['id']);
+                    if ($row['status']==='pending') echo '<p><label for="evg-join-note-'.(int)$row['id'].'">Begründung (bei Ablehnung erforderlich)</label><br><textarea id="evg-join-note-'.(int)$row['id'].'" name="note" maxlength="1000" rows="3" style="width:100%"></textarea></p>';
+                    echo '<p><button class="button button-primary" name="decision" value="approve">'.($row['status']==='processing' ? 'Mitgliedschaft prüfen' : 'Genehmigen').'</button> ';
+                    if ($row['status']==='pending') echo '<button class="button" name="decision" value="reject">Ablehnen</button>';
+                    echo '</p></form>';
+                }
+            }
+            echo '</td></tr>';
+        }
+        echo '</tbody></table>';
+        if ($pages>1) {
+            $base=add_query_arg(['page'=>'evg-group-requests','status'=>$status,'s'=>$search],admin_url('admin.php'));
+            echo '<div class="tablenav"><div class="tablenav-pages">';
+            if ($page>1) echo '<a class="button" href="'.esc_url(add_query_arg('paged',$page-1,$base)).'">← Vorherige Seite</a> ';
+            if ($page<$pages) echo '<a class="button" href="'.esc_url(add_query_arg('paged',$page+1,$base)).'">Nächste Seite →</a>';
+            echo '</div></div>';
+        }
     }
 }

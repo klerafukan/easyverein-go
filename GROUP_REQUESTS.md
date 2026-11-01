@@ -7,6 +7,14 @@ ist keine Gruppe freigegeben. WordPress-Administratoren dürfen alle fremden
 Anträge bearbeiten; weitere Freigeber nur die jeweils zugewiesenen Gruppen.
 Eigene Anträge können nicht selbst genehmigt werden.
 
+Die Seite öffnet zunächst den Reiter **Anträge** mit den offenen Anträgen.
+Administratoren sehen Mitglied, Gruppe, Nachricht, Zahlungsbestätigung und Status
+und können dort **Genehmigen** oder mit Begründung **Ablehnen**. Statusfilter,
+Freitextsuche und Seiten von zwanzig Anträgen erschließen auch die Historie mit
+Bearbeiter und Entscheidungsbegründung. Ein unbestätigter Schreibversuch bietet
+stattdessen **Mitgliedschaft prüfen**. Die Konfiguration liegt im separaten Reiter
+**Einstellungen**. Die WordPress-Freigabe benötigt keine Firebase-Einrichtung.
+
 Das Vereinsmitglied wird aus `evg_member_id` des angemeldeten WP-Kontos bestimmt.
 Ein Antrag erzeugt zunächst nur einen Datensatz. Bei Genehmigung wird die
 Zuordnung über EasyVerein v3.0 `member-group-assignment` geprüft, gegebenenfalls
@@ -84,5 +92,7 @@ Mitgliedschaften oder Benachrichtigungen werden nicht erzeugt.
 Abgedeckt sind Authentifizierung, Rollen, Selbstgenehmigung, Dubletten,
 Zahlungsbestätigung, Entscheidung, API-Ausfälle, verlorene Antworten, Wiederholung,
 Geräteübernahme, Widerruf nach Login-Ablauf, Push-Retry und ungültige Tokens.
+Die Admin-Prüfungen decken zusätzlich CSRF-Schutz, Administratorrechte,
+Textausgabe ohne HTML-Ausführung, Suche, Statusfilter und Paginierung ab.
 Die reale Push-Zustellung muss nach Einrichtung der nativen Zugangsdaten mit zwei
 Testkonten separat abgenommen werden.

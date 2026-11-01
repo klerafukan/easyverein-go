@@ -60,8 +60,8 @@ try {
     $wpdb->query("CREATE TABLE {$prefix}evg_groups (group_id varchar(191) PRIMARY KEY,name varchar(255))");
     $wpdb->query("CREATE TABLE {$prefix}evg_member_groups (member_id varchar(191),group_id varchar(191),member_name varchar(255),group_name varchar(255),assigned_at datetime,PRIMARY KEY(member_id,group_id))");
     EVG_App_Push::ensure_tables(true); EVG_Group_Requests::ensure_table(true);
-    foreach (['applicant','reviewer','other'] as $role) {
-        $id=wp_insert_user(['user_login'=>'gjtest_'.$role.'_'.substr(md5($prefix),0,8),'user_pass'=>wp_generate_password(40),'role'=>'subscriber','display_name'=>'[testsuite] '.$role]);
+    foreach (['applicant','reviewer','other','admin'] as $role) {
+        $id=wp_insert_user(['user_login'=>'gjtest_'.$role.'_'.substr(md5($prefix),0,8),'user_pass'=>wp_generate_password(40),'role'=>$role==='admin' ? 'administrator' : 'subscriber','display_name'=>'[testsuite] '.$role]);
         if (is_wp_error($id)) throw new Exception('Testkonto konnte nicht angelegt werden.');
         $users[$role]=(int)$id;
     }
@@ -88,7 +88,27 @@ try {
     $check($api($users['reviewer'],'POST',"/membership/requests/$id/decision",['action'=>'approve'])[0]===502,'EasyVerein-Ausfall wird nicht als Genehmigung gespeichert');
     $check($api($users['applicant'],'GET','/membership/requests',['scope'=>'mine'])[1]['items'][0]['status']==='pending','Antrag bleibt nach Upstream-Fehler erneut prüfbar');
     $upstream_fail=false;
-    $approved=$api($users['reviewer'],'POST',"/membership/requests/$id/decision",['action'=>'approve']);
+    $admin_action = function($user,$request_id,$decision,$note='',$nonce=null) use ($joins) {
+        wp_set_current_user($user);
+        return $joins->admin_decision(['request_id'=>$request_id,'decision'=>$decision,'note'=>$note,'_wpnonce'=>$nonce ?? wp_create_nonce('evg_group_join_decision_'.$request_id)]);
+    };
+    $denied=$admin_action($users['admin'],$id,'approve','','invalid');
+    $check(is_wp_error($denied) && $denied->get_error_code()==='evg_join_nonce' && $posts===0,'Admin-Freigabe ohne gültigen Nonce wird abgewiesen');
+    $denied=$admin_action($users['reviewer'],$id,'approve');
+    $check(is_wp_error($denied) && $denied->get_error_code()==='evg_join_forbidden','App-Freigaberecht allein gewährt keine WordPress-Adminverwaltung');
+    wp_set_current_user($users['admin']);
+    $_GET=[]; ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(strpos($html,'Anträge verwalten')!==false && strpos($html,'value="approve"')!==false && strpos($html,'value="reject"')!==false && strpos($html,'[testsuite] Beitritt')!==false,'Adminliste zeigt Antrag mit Nachricht und Entscheidungsformular');
+    $wpdb->update($prefix.'evg_group_join_requests',['note'=>'<script>alert(1)</script>'],['id'=>$id]);
+    ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(strpos($html,'<script>alert(1)</script>')===false && strpos($html,'&lt;script&gt;')!==false,'Antragsnachrichten werden im Backend als Text ausgegeben');
+    $wpdb->update($prefix.'evg_group_join_requests',['note'=>'[testsuite] Beitritt'],['id'=>$id]);
+    $applicant=get_user_by('id',$users['applicant']); $applicant->set_role('administrator');
+    $denied=$admin_action($users['applicant'],$id,'approve');
+    $check(is_wp_error($denied) && $denied->get_error_code()==='evg_join_forbidden','Auch Administratoren können eigene Anträge nicht genehmigen');
+    $applicant->set_role('subscriber');
+    $approved_response=$admin_action($users['admin'],$id,'approve');
+    $approved=[$approved_response->get_status(),$approved_response->get_data()];
     $check($approved[0]===200 && $approved[1]['status']==='approved','Genehmigung bestätigt die tatsächliche Mitgliedschaft');
     $check($posts===1,'EasyVerein erhält genau einen POST mit serverseitig bestimmtem Mitglied');
     $repeat=$api($users['reviewer'],'POST',"/membership/requests/$id/decision",['action'=>'approve']);
@@ -103,7 +123,9 @@ try {
     $new=$api($users['applicant'],'POST','/membership/requests',['group_id'=>'990002','acknowledge_payments'=>true]); $id2=$new[1]['id'];
     $check($new[0]===201,'Bestätigter Antrag mit Gruppenzahlungen wird gespeichert');
     $check($api($users['reviewer'],'POST',"/membership/requests/$id2/decision",['action'=>'reject'])[0]===400,'Ablehnung verlangt einen Grund');
-    $check($api($users['reviewer'],'POST',"/membership/requests/$id2/decision",['action'=>'reject','note'=>'[testsuite] Ausgebucht'])[1]['status']==='rejected','Ablehnung wird mit Begründung gespeichert');
+    $denied=$admin_action($users['admin'],$id2,'reject');
+    $check(is_wp_error($denied) && $denied->get_error_code()==='evg_join_action','Admin-Ablehnung verlangt ebenfalls eine Begründung');
+    $check($admin_action($users['admin'],$id2,'reject','[testsuite] Ausgebucht')->get_data()['status']==='rejected','Admin-Ablehnung wird mit Begründung gespeichert');
     $third=$api($users['applicant'],'POST','/membership/requests',['group_id'=>'990002','acknowledge_payments'=>true]); $id3=$third[1]['id'];
     $check($api($users['applicant'],'DELETE',"/membership/requests/$id3")[1]['status']==='withdrawn','Eigener offener Antrag kann zurückgezogen werden');
     $device=['installation_id'=>'11111111-1111-4111-8111-111111111111','secret'=>str_repeat('a',64),'token'=>'ExpoPushToken[testsuite-device-token]','platform'=>'android','project_id'=>EVG_App_Push::PROJECT_ID];
@@ -146,6 +168,22 @@ try {
     $fail_readback=false; $before_retry=$posts;
     $check($api($users['reviewer'],'POST',"/membership/requests/$uncertain_id/decision",['action'=>'approve'])[1]['status']==='approved' && $posts===$before_retry,'Nachprüfung bestätigt die Mitgliedschaft ohne zweiten Schreibversuch');
 
+
+    wp_set_current_user($users['admin']); $_GET=['status'=>'rejected','s'=>'Handball'];
+    ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(strpos($html,'[testsuite] Ausgebucht')!==false && strpos($html,'name="decision"')===false,'Statusfilter zeigt abgeschlossene Entscheidungen ohne Freigabeaktionen');
+    $_GET=['s'=>'nicht-vorhandene-testgruppe']; ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(strpos($html,'Keine Anträge für diese Auswahl')!==false,'Admin-Suche grenzt die Antragsliste ein');
+    for ($i=0;$i<23;$i++) $wpdb->insert($prefix.'evg_group_join_requests',[
+        'requested_by'=>$users['applicant'],'member_id'=>'990001','member_name'=>'[testsuite] Seite '.$i,
+        'group_id'=>'990002','group_label'=>'[testsuite] Paginierung','note'=>'','status'=>'rejected','requested_at'=>current_time('mysql',true),
+    ]);
+    $_GET=['status'=>'all','s'=>'Paginierung']; ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(substr_count($html,'Mitglieds-ID:')===20 && strpos($html,'Nächste Seite')!==false,'Adminliste begrenzt jede Seite auf zwanzig Anträge');
+    $_GET=['status'=>'all','s'=>'Paginierung','paged'=>2]; ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check(substr_count($html,'Mitglieds-ID:')===3 && strpos($html,'Vorherige Seite')!==false,'Adminliste zeigt die übrigen Anträge auf der Folgeseite');
+    wp_set_current_user($users['other']); $_GET=[]; ob_start(); $joins->admin_page(); $html=ob_get_clean();
+    $check($html==='','Unberechtigte erhalten auch über die Adminansicht keine Antragsdaten');
 
 } catch (Throwable $error) {
     $fails++; WP_CLI::warning('Unerwarteter Testfehler: '.$error->getMessage());
