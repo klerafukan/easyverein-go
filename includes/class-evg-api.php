@@ -619,6 +619,9 @@ HTML;
         }
 
         return new WP_REST_Response( [
+            'group_requests_available' => true,
+            'can_approve_group_requests' => EVG_Group_Requests::can_approve($user_id),
+            'pending_group_requests_count' => EVG_Group_Requests::pending_count($user_id),
             'wp_user_id'               => $user_id,
             'display_name'             => $user->display_name,
             'email'                    => $user->user_email,

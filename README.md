@@ -244,6 +244,9 @@ Folgende GitHub-Secrets müssen im Repository hinterlegt sein:
 
 ## Entwicklung
 
+Gruppenanträge, mobile Freigaben und die Push-Warteschlange sind in
+[GROUP_REQUESTS.md](GROUP_REQUESTS.md) dokumentiert.
+
 - **Kein Build-Schritt erforderlich** – alle Dateien sind reines PHP/JS/CSS nach WordPress-Coding-Standards.
 - Einstiegspunkt ist `easyverein-go.php`; Klassen liegen unter `includes/`.
 - Das Datenbankschema wird beim Plugin-Aktivieren via `dbDelta()` angelegt und bei Updates automatisch migriert.

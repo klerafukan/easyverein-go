@@ -20,6 +20,8 @@ require_once EVG_PATH.'includes/class-evg-events-sync.php';
 require_once EVG_PATH.'includes/class-evg-calendar-widget.php';
 require_once EVG_PATH.'includes/class-evg-frontend.php';
 require_once EVG_PATH.'includes/class-evg-api.php';
+require_once EVG_PATH.'includes/class-evg-app-push.php';
+require_once EVG_PATH.'includes/class-evg-group-requests.php';
 require_once EVG_PATH.'includes/class-evg-oidc.php';
 require_once EVG_PATH.'includes/class-evg-training-hours.php';
 
@@ -82,6 +84,8 @@ class EVG_Plugin {
         EVG_Api::ensure_change_requests_table();
         EVG_Events_Sync::ensure_tables();
         EVG_Training_Hours::ensure_table();
+        EVG_App_Push::ensure_tables();
+        EVG_Group_Requests::ensure_table();
     }
     public function on_deactivate(){
         $this->clear_cron();
@@ -269,6 +273,8 @@ class EVG_Plugin {
         new EVG_Frontend();
         new EVG_Calendar_Widget();
         new EVG_Api();
+        new EVG_App_Push();
+        new EVG_Group_Requests();
         new EVG_Oidc();
         add_action('init',[$this,'maybe_schedule_cron']);
         add_action('rest_api_init',[$this,'register_rest_endpoints']);
