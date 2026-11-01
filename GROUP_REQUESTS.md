@@ -96,3 +96,11 @@ Die Admin-Prüfungen decken zusätzlich CSRF-Schutz, Administratorrechte,
 Textausgabe ohne HTML-Ausführung, Suche, Statusfilter und Paginierung ab.
 Die reale Push-Zustellung muss nach Einrichtung der nativen Zugangsdaten mit zwei
 Testkonten separat abgenommen werden.
+
+Android-Transporttest am 1. November 2026 erfolgreich auf Staging abgenommen:
+Geräteregistrierung durch die App, Versand über die WordPress-Warteschlange an
+Expo/FCM, sichtbarer Empfang im Android-Emulator bei App im Hintergrund,
+Navigation zum Testantrag beim Antippen und erfolgreiches Expo-Receipt. Auch der
+Widerruf der Geräteanmeldung wurde bestätigt. Dafür wurde ausschließlich ein
+temporärer Antragsdatensatz verwendet; es erfolgte kein EasyVerein-Schreibzugriff.
+Der Testdatensatz und der zugehörige Versandauftrag wurden danach entfernt.
