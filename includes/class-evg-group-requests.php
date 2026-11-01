@@ -249,6 +249,7 @@ class EVG_Group_Requests {
     public function enqueue_admin_assets($hook) {
         if ($hook !== 'easyverein-go_page_evg-group-requests') return;
         wp_enqueue_script('evg-group-requests',EVG_URL.'assets/admin/evg-group-requests.js',[],EVG_VERSION,true);
+        wp_enqueue_style('evg-group-requests',EVG_URL.'assets/admin/evg-group-requests.css',[],EVG_VERSION);
     }
     public function save_settings() {
         if (!current_user_can('manage_options')) wp_die('Nicht erlaubt.',403);
@@ -274,16 +275,26 @@ class EVG_Group_Requests {
         echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'"><input type="hidden" name="action" value="evg_group_join_settings">';
         wp_nonce_field('evg_group_join_settings');
         echo '<div data-evg-group-selection hidden><p><button type="button" class="button" data-evg-select-all>Alle Gruppen auswählen</button> <button type="button" class="button" data-evg-deselect-all>Alle abwählen</button> <span data-evg-selection-count role="status" aria-live="polite"></span></p><p>Wähle alle Gruppen aus und entferne anschließend einzelne Häkchen als Ausnahmen. Übernommen wird die Auswahl erst mit „Einstellungen speichern“.</p></div>';
-        echo '<table class="widefat" data-evg-group-rules><thead><tr><th><label data-evg-select-header hidden><input type="checkbox" data-evg-toggle-all aria-label="Alle Gruppen als beantragbar auswählen oder abwählen"> </label>Beantragbar</th><th>Gruppe</th><th>Genehmiger</th><th>Gruppenzahlungen aktivieren</th></tr></thead><tbody>';
+        echo '<section class="evg-approver-bulk" data-evg-approver-bulk hidden aria-label="Genehmiger gesammelt bearbeiten"><h3>Genehmiger gesammelt bearbeiten</h3><p>Markiere die gewünschten Gruppen in der Spalte „Bearbeiten“. Es können nur beantragbare Gruppen ausgewählt werden.</p><p><button type="button" class="button" data-evg-mark-all>Alle beantragbaren Gruppen markieren</button> <button type="button" class="button" data-evg-unmark-all>Markierung aufheben</button> <span data-evg-mark-count role="status" aria-live="polite"></span></p>';
+        $this->render_approver_select($users,[],null,'Personen für Sammelzuweisung');
+        echo '<p><label>Aktion <select data-evg-approver-action><option value="add">Genehmiger hinzufügen</option><option value="remove">Genehmiger entfernen</option><option value="replace">Genehmiger ersetzen</option></select></label></p><p data-evg-approver-preview role="status" aria-live="polite"></p><button type="button" class="button" data-evg-apply-approvers>In Auswahl übernehmen</button><p data-evg-approver-result role="status" aria-live="polite"></p><p>Übernommen wird zunächst nur ins Formular. Dauerhaft gespeichert wird mit „Einstellungen speichern“.</p></section>';
+        echo '<table class="widefat" data-evg-group-rules><thead><tr><th data-evg-bulk-column hidden><input type="checkbox" data-evg-mark-toggle aria-label="Alle beantragbaren Gruppen zum Bearbeiten markieren"> Bearbeiten</th><th><label data-evg-select-header hidden><input type="checkbox" data-evg-toggle-all aria-label="Alle Gruppen als beantragbar auswählen oder abwählen"> </label>Beantragbar</th><th>Gruppe</th><th>Genehmiger</th><th>Gruppenzahlungen aktivieren</th></tr></thead><tbody>';
         foreach ($groups as $group) {
             $id=(string)$group['group_id']; $rule=$rules[$id] ?? [];
-            echo '<tr><td><input type="checkbox" data-evg-group-enabled aria-label="'.esc_attr(($group['name'] ?: $id).' als beantragbar freigeben').'" name="rules['.esc_attr($id).'][enabled]" value="1" '.checked(isset($rules[$id]),true,false).'></td><td>'.esc_html($group['name'] ?: $id).'</td><td><select multiple size="4" name="rules['.esc_attr($id).'][approvers][]" aria-label="Genehmiger für '.esc_attr($group['name']).'">';
-            foreach ($users as $user) echo '<option value="'.(int)$user->ID.'" '.selected(in_array((int)$user->ID,array_map('intval',(array)($rule['approvers'] ?? [])),true),true,false).'>'.esc_html($user->display_name).'</option>';
-            echo '</select></td><td><input type="checkbox" name="rules['.esc_attr($id).'][payment_active]" value="1" '.checked(!empty($rule['payment_active']),true,false).'></td></tr>';
+            $group_name=$group['name'] ?: $id;
+            echo '<tr><td data-evg-bulk-column hidden><input type="checkbox" data-evg-mark-group aria-label="'.esc_attr($group_name.' zum Bearbeiten markieren').'"></td><td><input type="checkbox" data-evg-group-enabled aria-label="'.esc_attr($group_name.' als beantragbar freigeben').'" name="rules['.esc_attr($id).'][enabled]" value="1" '.checked(isset($rules[$id]),true,false).'></td><td>'.esc_html($group_name).'</td><td>';
+            $this->render_approver_select($users,(array)($rule['approvers'] ?? []),'rules['.$id.'][approvers][]','Genehmiger für '.$group_name);
+            echo '</td><td><input type="checkbox" name="rules['.esc_attr($id).'][payment_active]" value="1" '.checked(!empty($rule['payment_active']),true,false).' aria-label="'.esc_attr('Gruppenzahlungen '.$group_name).'"></td></tr>';
         }
         echo '</tbody></table><h2>Expo Push</h2><p>Optionaler Expo Access Token bei aktivierter Push-Sicherheit. Bereits gespeicherte Tokens werden nicht angezeigt.</p><input type="password" autocomplete="new-password" name="expo_access_token" value=""><label><input type="checkbox" name="clear_expo_access_token" value="1"> Gespeicherten Expo-Token löschen</label>';
         submit_button('Einstellungen speichern'); echo '</form><h2>Push-Status</h2>';
         foreach ((array)$wpdb->get_results("SELECT status,COUNT(*) AS n FROM {$wpdb->prefix}evg_app_push_jobs GROUP BY status",ARRAY_A) as $item) echo '<p>'.esc_html($item['status']).': '.(int)$item['n'].'</p>';
+    }
+    private function render_approver_select($users,$selected,$name,$label) {
+        $selected=array_map('intval',$selected);
+        echo '<select data-evg-approvers multiple size="4"'.($name!==null ? ' name="'.esc_attr($name).'"' : '').' aria-label="'.esc_attr($label).'">';
+        foreach ($users as $user) echo '<option value="'.(int)$user->ID.'" '.selected(in_array((int)$user->ID,$selected,true),true,false).'>'.esc_html($user->display_name.' ('.$user->user_login.')').'</option>';
+        echo '</select>';
     }
     /** Gleicher Entscheidungsweg wie REST, zusätzlich mit WordPress-Adminrecht und CSRF-Prüfung. */
     public function admin_decision(array $input) {

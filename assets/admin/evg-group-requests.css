@@ -1,0 +1,18 @@
+.evg-approver-bulk {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    padding: 0 16px;
+    margin: 16px 0;
+}
+.evg-approver-picker { max-width: 480px; min-width: 220px; }
+.evg-approver-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.evg-approver-chip { background: #f0f0f1; border-radius: 4px; padding: 3px 6px; }
+.evg-approver-chip button { border: 0; background: transparent; cursor: pointer; color: #a00; font-size: 18px; }
+.evg-approver-picker summary { cursor: pointer; color: #2271b1; }
+.evg-approver-picker input[type=search] { width: 100%; margin: 8px 0; }
+.evg-approver-options { max-height: 200px; overflow: auto; }
+.evg-approver-options label { display: block; padding: 6px 2px; }
+.evg-approver-options label[hidden] { display: none; }
+.evg-approver-disabled { opacity: .6; }
+.evg-approver-disabled summary { cursor: default; }
+[data-evg-group-rules] td { vertical-align: top; }

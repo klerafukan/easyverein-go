@@ -20,6 +20,17 @@ der Zähler zeigt die aktuelle Auswahl. Genehmiger und Zahlungseinstellungen
 werden durch die Sammelauswahl nicht geändert. Erst „Einstellungen speichern“
 übernimmt die Auswahl ins Backend.
 
+Genehmiger werden als Namens-Chips angezeigt und können über das × einzeln
+entfernt werden. „Person hinzufügen / suchen“ durchsucht Namen und Benutzernamen.
+Für Sammeländerungen gibt es eine eigene Spalte **Bearbeiten**, unabhängig von
+**Beantragbar**. Nur beantragbare Gruppen können markiert werden. Für die markierten
+Gruppen lassen sich ausgewählte Personen hinzufügen (Standard), entfernen oder
+als vollständige Genehmigerliste einsetzen (**Ersetzen**). Die Vorschau nennt
+Aktion, Personen und Gruppenanzahl. **In Auswahl übernehmen** ändert zunächst das
+Formular; erst **Einstellungen speichern** speichert dauerhaft. Gruppenzahlungen
+und Gruppenfreigaben werden durch die Genehmiger-Sammelaktion nicht geändert.
+Ohne JavaScript bleiben die bisherigen nativen Mehrfachlisten nutzbar.
+
 Das Vereinsmitglied wird aus `evg_member_id` des angemeldeten WP-Kontos bestimmt.
 Ein Antrag erzeugt zunächst nur einen Datensatz. Bei Genehmigung wird die
 Zuordnung über EasyVerein v3.0 `member-group-assignment` geprüft, gegebenenfalls
