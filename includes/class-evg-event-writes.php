@@ -55,7 +55,7 @@ class EVG_Event_Writes {
         foreach ((array)$wpdb->get_results("SELECT id,name FROM {$wpdb->prefix}evg_calendars ORDER BY name",ARRAY_A) as $r) {
             if (in_array((string)$r['id'],$ids,true)) $calendars[]=['calendar_id'=>(string)$r['id'],'name'=>$r['name']];
         }
-        return new WP_REST_Response(['calendars'=>$calendars,'timezone'=>wp_timezone_string(),'max_date'=>wp_date('Y-m-d',strtotime('+12 months'))],200);
+        return new WP_REST_Response(['calendars'=>$calendars,'timezone'=>wp_timezone_string(),'min_date'=>wp_date('Y-m-d'),'max_date'=>wp_date('Y-m-d',strtotime('+12 months'))],200);
     }
     private static function error($code,$message,$status=400) {return new WP_Error($code,$message,['status'=>$status]);}
     private static function date($value) {
