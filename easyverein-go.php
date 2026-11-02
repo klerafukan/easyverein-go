@@ -22,6 +22,7 @@ require_once EVG_PATH.'includes/class-evg-frontend.php';
 require_once EVG_PATH.'includes/class-evg-api.php';
 require_once EVG_PATH.'includes/class-evg-app-push.php';
 require_once EVG_PATH.'includes/class-evg-group-requests.php';
+require_once EVG_PATH.'includes/class-evg-event-writes.php';
 require_once EVG_PATH.'includes/class-evg-oidc.php';
 require_once EVG_PATH.'includes/class-evg-training-hours.php';
 
@@ -275,6 +276,7 @@ class EVG_Plugin {
         new EVG_Api();
         new EVG_App_Push();
         new EVG_Group_Requests();
+        new EVG_Event_Writes();
         new EVG_Oidc();
         add_action('init',[$this,'maybe_schedule_cron']);
         add_action('rest_api_init',[$this,'register_rest_endpoints']);

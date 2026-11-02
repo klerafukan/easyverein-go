@@ -123,6 +123,11 @@ class EVG_Events_Sync {
             $result['skipped'] = true;
             return $result;
         }
+        if (!self::acquire_write_lock()) {
+            $result['message']='Ein Termin wird gerade gespeichert.';
+            $result['skipped']=true;
+            return $result;
+        }
         set_transient( self::LOCK, 1, 10 * MINUTE_IN_SECONDS );
 
         try {
@@ -140,6 +145,7 @@ class EVG_Events_Sync {
             error_log( '[EVG Events Sync] Fehler: ' . $e->getMessage() );
         } finally {
             delete_transient( self::LOCK );
+            self::release_write_lock();
         }
 
         $result['calls']    = $this->calls;
@@ -154,6 +160,19 @@ class EVG_Events_Sync {
         }
 
         return $result;
+    }
+
+    private static function write_lock_name(): string {
+        global $wpdb;
+        return 'evg_events_'.substr(hash('sha256',DB_NAME.$wpdb->prefix),0,40);
+    }
+    public static function acquire_write_lock(): bool {
+        global $wpdb;
+        return (string)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,0)',self::write_lock_name()))==='1';
+    }
+    public static function release_write_lock(): void {
+        global $wpdb;
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',self::write_lock_name()));
     }
 
     public static function log_file( $ym = null ): string {
@@ -299,7 +318,6 @@ class EVG_Events_Sync {
         $new        = 0;
 
         // Kalender/Location-Cache für Joins
-        $calendars = $this->load_calendar_cache();
         $locations = $this->load_location_cache();
 
         $seen = [];
@@ -308,63 +326,8 @@ class EVG_Events_Sync {
             if ( ! $id ) continue;
             if ( ! empty( $ev['is_reservation'] ?? $ev['isReservation'] ?? false ) ) continue;
 
-            // Datumsfelder normalisieren (EV gibt ISO 8601 zurück)
-            $start_dt = $this->parse_dt( (string)( $ev['start'] ?? '' ) );
-            $end_dt   = $this->parse_dt( (string)( $ev['end']   ?? '' ) );
-            if ( ! $start_dt ) continue;
-
-            // Location: FK oder Freitext
-            $loc_id   = null;
-            $loc_name = '';
-            $loc_ref = $ev['location_object'] ?? $ev['locationObject'] ?? null;
-            if ( ! empty( $loc_ref ) ) {
-                $loc_id   = (int) $this->extract_id( $loc_ref );
-                $loc_name = $locations[ $loc_id ] ?? '';
-            }
-            $loc_text = $ev['location_name'] ?? $ev['locationName'] ?? '';
-            if ( $loc_name === '' && ! empty( $loc_text ) ) {
-                $loc_name = (string) $loc_text;
-            }
-
-            // Calendar FK
-            $cal_id = null;
-            if ( ! empty( $ev['calendar'] ) ) {
-                $cal_id = (int) $this->extract_id( $ev['calendar'] );
-            }
-
-            // Participation-Zeitraum
-            $part_start = $this->parse_dt( (string)( $ev['start_participation'] ?? $ev['startParticipation'] ?? '' ) );
-            $part_end   = $this->parse_dt( (string)( $ev['end_participation']   ?? $ev['endParticipation']   ?? '' ) );
-
-            $wpdb->replace(
-                $wpdb->prefix . 'evg_events',
-                [
-                    'id'                  => $id,
-                    'name'                => substr( (string)( $ev['name'] ?? '' ), 0, 500 ),
-                    'description'         => (string)( $ev['description'] ?? '' ),
-                    'start_dt'            => $start_dt,
-                    'end_dt'              => $end_dt,
-                    'all_day'             => (int)(bool)( $ev['all_day']        ?? $ev['allDay']         ?? false ),
-                    'location_id'         => $loc_id,
-                    'location_name'       => substr( $loc_name, 0, 500 ),
-                    'calendar_id'         => $cal_id,
-                    'series_id'           => $this->extract_id( $ev['interval'] ?? null ),
-                    'is_public'           => (int)(bool)( $ev['is_public']      ?? $ev['isPublic']       ?? true ),
-                    'canceled'            => (int)(bool)( $ev['canceled']       ?? false ),
-                    'is_reservation'      => (int)(bool)( $ev['is_reservation'] ?? $ev['isReservation']  ?? false ),
-                    'min_participants'    => $this->int_or_null( $ev['min_participators'] ?? $ev['minParticipators'] ?? null ),
-                    'max_participants'    => $this->int_or_null( $ev['max_participators'] ?? $ev['maxParticipators'] ?? null ),
-                    'participation_start' => $part_start,
-                    'participation_end'   => $part_end,
-                    'access_level'        => (int)( $ev['access'] ?? 1 ),
-                    'synced_at'           => $now,
-                ],
-                [
-                    '%d', '%s', '%s', '%s', '%s', '%d',
-                    '%d', '%s', '%d', '%d', '%d', '%d', '%d',
-                    '%d', '%d', '%s', '%s', '%d', '%s',
-                ]
-            );
+            if (!$this->store_event($ev,$locations)) throw new \RuntimeException('Termin konnte nicht gespeichert werden.');
+            if (class_exists('EVG_Event_Writes')) EVG_Event_Writes::observe_event($ev);
             if ( ! isset( $known[ $id ] ) ) $new++;
             $seen[] = $id;
             $count++;
@@ -388,6 +351,73 @@ class EVG_Events_Sync {
         }
 
         return [ $count, $new, $deleted ];
+    }
+
+    /** Einzelnen kanonischen EasyVerein-Termin in denselben Cache wie den Vollsync übernehmen. */
+    public function store_event(array $ev, ?array $locations = null): bool {
+        global $wpdb;
+        $id=(int)($ev['id'] ?? 0);
+        if (!$id || !empty($ev['is_reservation'] ?? false)) return false;
+        $now=current_time('mysql');
+        $locations=$locations ?? $this->load_location_cache();
+        // Datumsfelder normalisieren (EV gibt ISO 8601 zurück)
+        $start_dt = $this->parse_dt( (string)( $ev['start'] ?? '' ) );
+        $end_dt   = $this->parse_dt( (string)( $ev['end']   ?? '' ) );
+        if ( ! $start_dt ) return false;
+
+        // Location: FK oder Freitext
+        $loc_id   = null;
+        $loc_name = '';
+        $loc_ref = $ev['location_object'] ?? $ev['locationObject'] ?? null;
+        if ( ! empty( $loc_ref ) ) {
+            $loc_id   = (int) $this->extract_id( $loc_ref );
+            $loc_name = $locations[ $loc_id ] ?? '';
+        }
+        $loc_text = $ev['location_name'] ?? $ev['locationName'] ?? '';
+        if ( $loc_name === '' && ! empty( $loc_text ) ) {
+            $loc_name = (string) $loc_text;
+        }
+
+        // Calendar FK
+        $cal_id = null;
+        if ( ! empty( $ev['calendar'] ) ) {
+            $cal_id = (int) $this->extract_id( $ev['calendar'] );
+        }
+
+        // Participation-Zeitraum
+        $part_start = $this->parse_dt( (string)( $ev['start_participation'] ?? $ev['startParticipation'] ?? '' ) );
+        $part_end   = $this->parse_dt( (string)( $ev['end_participation']   ?? $ev['endParticipation']   ?? '' ) );
+
+        $stored = $wpdb->replace(
+            $wpdb->prefix . 'evg_events',
+            [
+                'id'                  => $id,
+                'name'                => substr( (string)( $ev['name'] ?? '' ), 0, 500 ),
+                'description'         => (string)( $ev['description'] ?? '' ),
+                'start_dt'            => $start_dt,
+                'end_dt'              => $end_dt,
+                'all_day'             => (int)(bool)( $ev['all_day']        ?? $ev['allDay']         ?? false ),
+                'location_id'         => $loc_id,
+                'location_name'       => substr( $loc_name, 0, 500 ),
+                'calendar_id'         => $cal_id,
+                'series_id'           => $this->extract_id( $ev['interval'] ?? null ),
+                'is_public'           => (int)(bool)( $ev['is_public']      ?? $ev['isPublic']       ?? true ),
+                'canceled'            => (int)(bool)( $ev['canceled']       ?? false ),
+                'is_reservation'      => (int)(bool)( $ev['is_reservation'] ?? $ev['isReservation']  ?? false ),
+                'min_participants'    => $this->int_or_null( $ev['min_participators'] ?? $ev['minParticipators'] ?? null ),
+                'max_participants'    => $this->int_or_null( $ev['max_participators'] ?? $ev['maxParticipators'] ?? null ),
+                'participation_start' => $part_start,
+                'participation_end'   => $part_end,
+                'access_level'        => (int)( $ev['access'] ?? 1 ),
+                'synced_at'           => $now,
+            ],
+            [
+                '%d', '%s', '%s', '%s', '%s', '%d',
+                '%d', '%s', '%d', '%d', '%d', '%d', '%d',
+                '%d', '%d', '%s', '%s', '%d', '%s',
+            ]
+        );
+        return $stored !== false;
     }
 
     /** Entfernt Kalender/Orte, die die API nicht mehr liefert (nur bei nicht-leerer Liste). */

@@ -619,6 +619,8 @@ HTML;
         }
 
         return new WP_REST_Response( [
+            'event_creation_available' => true,
+            'can_create_events' => count(EVG_Event_Writes::calendar_ids($user_id))>0,
             'group_requests_available' => true,
             'can_approve_group_requests' => EVG_Group_Requests::can_approve($user_id),
             'pending_group_requests_count' => EVG_Group_Requests::pending_count($user_id),
