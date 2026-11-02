@@ -11,7 +11,14 @@ Die App unterstützt Titel, Kalender, Beginn/Ende, Ganztag, Ortsname und Beschre
 
 ## Rechte
 
-Administratoren dürfen in allen synchronisierten Kalendern Termine anlegen. Andere Personen benötigen `evg_is_uebungsleiter`, ein verknüpftes Vereinsmitglied und mindestens eine eigene Gruppe in `evg_calendars.allowed_groups`. Die Gruppenauswahl entspricht der Stundenerfassung: tatsächliche Mitgliedschaften plus explizit am WordPress-Konto zugeordnete Gruppen. Kalender ohne Gruppenbezug stehen nur Administratoren zur Anlage zur Verfügung. Der konfigurierte Synchronisations-Kalenderfilter gilt auch für Schreibziele. Die serverseitige Prüfung erfolgt unmittelbar vor jedem neuen EasyVerein-Schreibzugriff. Reine Mitgliedschaft und Mitgliederdaten-Leserechte allein reichen nicht aus. `/me` meldet `event_creation_available` und `can_create_events`.
+Administratoren dürfen in allen synchronisierten Kalendern Termine anlegen. Andere Personen benötigen `evg_is_uebungsleiter`, ein verknüpftes Vereinsmitglied und eine ausdrückliche Trainingsgruppen-Kalender-Zuordnung im Plugin. Die Gruppenauswahl entspricht der Stundenerfassung: tatsächliche Mitgliedschaften plus explizit am WordPress-Konto zugeordnete Gruppen. Reine Mitgliedschaft und Mitgliederdaten-Leserechte allein reichen nicht aus.
+
+Die Zuordnung wird unter **Easyverein Go → Trainingskalender** gepflegt. Jede vorhandene EasyVerein-Gruppe kann mehrere vorhandene Kalender erhalten; ein Kalender kann mehreren Gruppen zugeordnet werden. Die Option `evg_training_calendar_map` speichert Gruppen-IDs mit Kalender-IDs. Gruppen und Kalender bleiben EasyVerein-Stammdaten, Termine bleiben ausschließlich in EasyVerein führend. Die App erhält weiterhin dieselbe Liste erlaubter Kalender über `/event-creation-options`; `/me` meldet `can_create_events` entsprechend.
+
+`allowed_groups` eines Kalenders regelt nur die Sichtbarkeit. Die Zuordnung erteilt zusätzliche Trainer-Schreibrechte, öffnet jedoch keinen in EasyVerein für die Person gesperrten Kalender. Auch Kalender ohne Sichtbarkeitsbeschränkung können ausdrücklich zugeordnet werden. Ohne Zuordnung gibt es für Trainer keine Schreibziele; bestehende Sichtbarkeitsfreigaben werden nicht automatisch migriert. Der konfigurierte Synchronisations-Kalenderfilter gilt zusätzlich. Rechte, vorhandene Gruppen/Kalender und Zuordnungen werden vor jedem neuen Schreibzugriff erneut geprüft.
+
+Die Admin-Seite bietet Gruppen- und Kalendersuche, Mehrfachauswahl und entfernbare Auswahl-Chips. Suchfilter ändern keine gespeicherten oder im Formular gewählten Zuordnungen. Erst **Zuordnungen speichern** schreibt die Konfiguration; Administratorrecht und gültiger Nonce sind erforderlich. Gelöschte Gruppen/Kalender werden auch bei alten gespeicherten Zuordnungen nicht als Rechtequelle verwendet. Der normale EasyVerein-Sync überschreibt die Zuordnung nicht.
+
 
 ## Wiederaufnahme und Synchronisation
 
@@ -25,6 +32,6 @@ Vollsync und Terminanlage verwenden dieselbe verbindungsgebundene MySQL-Sperre. 
 
 ## Prüfung und Betrieb
 
-`bash tests/run-event-staging.sh` führt isolierte WordPress-Tests mit temporären Tabellen und Konten aus. Alle HTTP- und Mail-Aufrufe werden abgefangen; es werden keine echten EasyVerein-Termine angelegt. Der Runner überspringt für diesen CLI-Prozess Plugins/Themes und lädt die geprüften Quelldateien direkt. Abgedeckt sind Rechte, Datumsvalidierung, kanonisches Rücklesen, Vollsync-Rückweg, Antwortverlust, Wiederaufnahme und konkurrierende Datenbanksperren.
+`bash tests/run-event-staging.sh` führt isolierte WordPress-Tests mit temporären Tabellen und Konten aus. Alle HTTP- und Mail-Aufrufe werden abgefangen; es werden keine echten EasyVerein-Termine angelegt. Der Runner überspringt für diesen CLI-Prozess Plugins/Themes und lädt die geprüften Quelldateien direkt. Abgedeckt sind Admin-Speicherung, Nonce, explizite Zuordnungen, Rechteentzug, gelöschte Stammdaten, Sichtbarkeit, Synchronisationsfilter, Datumsvalidierung, kanonisches Rücklesen, Vollsync-Rückweg, Antwortverlust, Wiederaufnahme und konkurrierende Datenbanksperren.
 
 API-Vertrag: [offizielle EasyVerein-v3-Dokumentation](https://easyverein.com/api/v3.0/documentation). Die Kalender-Relation ist in der Swagger-POST-Feldliste unvollständig dokumentiert; eine lesende `OPTIONS /api/v3.0/event`-Abfrage mit der Live-Konfiguration hat sie am 2. November 2026 als beschreibbar bestätigt. Staging lieferte bei dieser echten API-Abfrage HTTP 401; die isolierten Tests hängen nicht von diesem Zugang ab. Ein echter Anlage-/Löschtest in EasyVerein ist dadurch nicht ersetzt.

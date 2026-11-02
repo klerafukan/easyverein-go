@@ -33,12 +33,17 @@ class EVG_Event_Writes {
         if (!$admin && !(bool)(int)get_user_meta($uid,'evg_is_uebungsleiter',true)) return [];
         if (!$admin && !(string)get_user_meta($uid,'evg_member_id',true)) return [];
         $groups=$admin ? [] : EVG_Events_Sync::member_group_ids($uid,(string)get_user_meta($uid,'evg_member_id',true));
+        $map=EVG_Training_Calendars::mappings();
+        $assigned=[];
+        foreach ($groups as $group) $assigned=array_merge($assigned,$map[$group]??[]);
         $filter=array_filter(array_map('trim',explode(',',(string)get_option('evg_events_calendar_filter',''))));
         $ids=[];
         foreach ($rows as $row) {
             $id=(string)$row['id'];
             if ($filter && !in_array($id,$filter,true)) continue;
-            if ($admin || array_intersect($groups,explode(',',(string)$row['allowed_groups']))) $ids[]=$id;
+            // Sichtbarkeit ist nur eine zusätzliche Leseschranke, niemals die Quelle des Schreibrechts.
+            $visible=$row['allowed_groups']==='' || array_intersect($groups,explode(',',(string)$row['allowed_groups']));
+            if ($admin || (in_array($id,$assigned,true) && $visible)) $ids[]=$id;
         }
         return $ids;
     }

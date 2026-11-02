@@ -1,0 +1,12 @@
+[data-evg-training-calendars] td { vertical-align: top; }
+[data-evg-training-calendars] tr[hidden],
+[data-evg-training-calendars] [hidden] { display: none; }
+.evg-calendar-picker { max-width: 650px; }
+.evg-calendar-picker summary { cursor: pointer; color: #2271b1; margin: 8px 0; }
+.evg-calendar-picker input[type=search] { margin: 8px; }
+.evg-calendar-options { max-height: 260px; overflow: auto; }
+.evg-calendar-options > label { display: block; padding: 8px 4px; }
+.evg-calendar-hint { display: block; color: #7a4b00; margin-left: 25px; }
+.evg-calendar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.evg-calendar-chip { padding: 3px 6px; background: #e8eff7; border-radius: 4px; }
+.evg-calendar-chip button { border: 0; background: transparent; color: #a00; cursor: pointer; font-size: 18px; }
