@@ -8,6 +8,10 @@ class EVG_Plugin { public static function live_table_prefix(){ return 'evg'; } }
 function evg_api_throttle() {}
 function evg_http_get($url,$headers){ return wp_remote_get($url,['headers'=>$headers]); }
 function evg_debug_dir(){ return sys_get_temp_dir(); }
+// Konfigurationsänderungen im Test bleiben ebenfalls im Prozess, nicht in echten Staging-Rechten.
+$test_mapping=[];
+add_filter('pre_option_'.EVG_Training_Calendars::OPTION,function()use(&$test_mapping){return $test_mapping;});
+add_filter('pre_update_option_'.EVG_Training_Calendars::OPTION,function($value,$old)use(&$test_mapping){$test_mapping=$value;return $old;},10,2);
 add_filter('pre_option_evg_api_key',function(){return 'isolated-test-key';});
 $calendar_filter='';
 add_filter('pre_option_evg_events_calendar_filter',function()use(&$calendar_filter){return $calendar_filter;});
@@ -34,7 +38,7 @@ add_filter('pre_http_request',function($pre,$opts,$url)use(&$events,&$posts,&$fa
 },999,3);
 global $wpdb; $original=$wpdb->prefix; $prefix=$original.'ectest_'.substr(md5(wp_generate_uuid4()),0,8).'_';
 $tables=['evg_calendars','evg_locations','evg_events','evg_event_writes','evg_member_groups','evg_groups']; $users=[];$checks=0;$fails=0;
-$options=[EVG_Training_Calendars::OPTION,'evg_events_schema','evg_event_writes_schema','evg_events_synced_at',EVG_Events_Sync::RESULT_OPTION];$old=[];foreach($options as $key)$old[$key]=get_option($key,null);
+$options=['evg_events_schema','evg_event_writes_schema','evg_events_synced_at',EVG_Events_Sync::RESULT_OPTION];$old=[];foreach($options as $key)$old[$key]=get_option($key,null);
 $check=function($yes,$label)use(&$checks,&$fails){$checks++;if(!$yes)$fails++;WP_CLI::line(($yes?'ok ':'not ok ').$checks.' - '.$label);};
 $api=function($uid,$method,$path,$body=[]) {wp_set_current_user($uid);$r=new WP_REST_Request($method,'/easyverein-go/v1'.$path);if($method==='POST'){$r->set_header('Content-Type','application/json');$r->set_body(wp_json_encode($body));}$res=rest_do_request($r);return [$res->get_status(),$res->get_data()];};
 try {
