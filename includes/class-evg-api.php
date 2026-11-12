@@ -157,6 +157,27 @@ class EVG_Api {
             'permission_callback' => $auth,
         ] );
 
+        register_rest_route( 'easyverein-go/v1', '/tasks', [
+            'methods' => WP_REST_Server::READABLE,
+            'permission_callback' => $auth,
+            'callback' => [$this, 'rest_tasks'],
+            'args' => [
+                'offset' => ['type' => 'integer', 'default' => 0, 'minimum' => 0],
+            ],
+        ] );
+
+        register_rest_route( 'easyverein-go/v1', '/tasks', [
+            'methods' => WP_REST_Server::CREATABLE,
+            'permission_callback' => function () { return current_user_can( 'manage_options' ); },
+            'callback' => [$this, 'rest_create_task'],
+        ] );
+
+        register_rest_route( 'easyverein-go/v1', '/tasks/(?P<id>[1-9][0-9]*)/complete', [
+            'methods' => WP_REST_Server::CREATABLE,
+            'permission_callback' => $auth,
+            'callback' => [$this, 'rest_complete_task'],
+        ] );
+
         register_rest_route( 'easyverein-go/v1', '/members', [
             'methods'             => WP_REST_Server::READABLE,
             'callback'            => [$this, 'rest_members'],
@@ -582,6 +603,136 @@ HTML;
     // /me
     // -------------------------------------------------------------------------
 
+    private function task_member_id(): string {
+        $id = (string) get_user_meta( get_current_user_id(), 'evg_member_id', true );
+        return preg_match( '/^[1-9][0-9]*$/D', $id ) ? $id : '';
+    }
+
+    private function task_request( string $method, string $path, array $query = [], ?array $payload = null ) {
+        $key = (string) get_option( 'evg_api_key', '' );
+        if ( $key === '' ) {
+            return new WP_Error( 'evg_tasks_unavailable', 'Die Aufgabenverbindung ist nicht eingerichtet.', ['status' => 503] );
+        }
+        $base = rtrim( (string) get_option( 'evg_api_base', 'https://easyverein.com' ), '/' );
+        $headers = ['Accept' => 'application/json'];
+        if ( get_option( 'evg_auth_header', 'Authorization Bearer' ) === 'Authorization Bearer' ) {
+            $headers['Authorization'] = 'Bearer ' . $key;
+        } else {
+            $headers['X-API-Key'] = $key;
+        }
+        $args = ['method' => $method, 'headers' => $headers, 'timeout' => 12, 'redirection' => 0];
+        if ( $payload !== null ) {
+            $args['headers']['Content-Type'] = 'application/json';
+            $args['body'] = wp_json_encode( $payload );
+        }
+        evg_api_throttle();
+        $upstream = wp_remote_request( add_query_arg( $query, $base . '/api/v3.0/' . $path ), $args );
+        $status = is_wp_error( $upstream ) ? 0 : wp_remote_retrieve_response_code( $upstream );
+        $body = json_decode( wp_remote_retrieve_body( $upstream ), true );
+        if ( $status < 200 || $status >= 300 || ! is_array( $body ) ) {
+            $message = $method === 'GET' ? 'Aufgaben konnten nicht aus EasyVerein geladen werden.'
+                : 'EasyVerein hat die Änderung nicht bestätigt. Bitte lade die Aufgaben neu und prüfe den Stand.';
+            return new WP_Error( 'evg_tasks_upstream', $message, ['status' => 502] );
+        }
+        return $body;
+    }
+
+    /** Die EasyVerein-Suche berücksichtigt direkte Zuweisungen, Gruppen und Ausschlüsse. */
+    public function rest_tasks( WP_REST_Request $request ) {
+        $member_id = $this->task_member_id();
+        if ( $member_id === '' ) {
+            return new WP_Error( 'evg_tasks_member', 'Für Aufgaben ist ein verknüpftes Vereinsmitglied erforderlich.', ['status' => 403] );
+        }
+
+        $offset = (int) $request['offset'];
+        $body = $this->task_request( 'GET', 'task', [
+            'responsible_member' => $member_id,
+            'ordering' => 'id',
+            'limit' => 50,
+            'offset' => $offset,
+        ] );
+        if ( is_wp_error( $body ) ) return $body;
+        if ( ! is_array( $body['results'] ?? null ) ) {
+            return new WP_Error( 'evg_tasks_format', 'EasyVerein hat ein unerwartetes Aufgabenformat geliefert.', ['status' => 502] );
+        }
+
+        $tasks = [];
+        foreach ( $body['results'] as $task ) {
+            if ( ! is_array( $task ) || ! ctype_digit( (string) ($task['id'] ?? '') ) || ! is_string( $task['name'] ?? null ) ) {
+                return new WP_Error( 'evg_tasks_format', 'EasyVerein hat ein unerwartetes Aufgabenformat geliefert.', ['status' => 502] );
+            }
+            $tasks[] = [
+                'id' => (string) $task['id'],
+                'name' => sanitize_text_field( $task['name'] ),
+                'description' => is_string( $task['description'] ?? null ) ? $task['description'] : '',
+                'state' => is_string( $task['state'] ?? null ) ? $task['state'] : '',
+                'due' => is_string( $task['due'] ?? null ) ? $task['due'] : null,
+            ];
+        }
+        $next_offset = ! empty( $body['next'] ) && $tasks ? $offset + count( $tasks ) : null;
+        $response = new WP_REST_Response( ['tasks' => $tasks, 'next_offset' => $next_offset] );
+        $response->header( 'Cache-Control', 'private, no-store' );
+        return $response;
+    }
+
+    public function rest_create_task( WP_REST_Request $request ) {
+        $member_id = $this->task_member_id();
+        if ( $member_id === '' ) {
+            return new WP_Error( 'evg_tasks_member', 'Für Aufgaben ist ein verknüpftes Vereinsmitglied erforderlich.', ['status' => 403] );
+        }
+
+        $input = $request->get_json_params();
+        $name = is_string( $input['name'] ?? null ) ? sanitize_text_field( $input['name'] ) : '';
+        $description = $input['description'] ?? '';
+        if ( $name === '' || mb_strlen( $name ) > 200 || ! is_string( $description ) || mb_strlen( $description ) > 10000 ) {
+            return new WP_Error( 'evg_task_input', 'Bitte einen Titel mit höchstens 200 Zeichen und eine Beschreibung mit höchstens 10.000 Zeichen eingeben.', ['status' => 400] );
+        }
+        $payload = [
+            'name' => $name,
+            'description' => sanitize_textarea_field( $description ),
+            'members' => [(int) $member_id],
+            'public' => false,
+            'state' => 'offen',
+        ];
+        $due = $input['due'] ?? '';
+        if ( $due !== '' ) {
+            $date = is_string( $due ) ? DateTimeImmutable::createFromFormat( '!Y-m-d', $due, wp_timezone() ) : false;
+            if ( ! $date || $date->format( 'Y-m-d' ) !== $due ) {
+                return new WP_Error( 'evg_task_due', 'Bitte ein gültiges Fälligkeitsdatum eingeben.', ['status' => 400] );
+            }
+            $payload['due'] = $date->setTime( 23, 59 )->format( DateTimeInterface::ATOM );
+        }
+
+        $body = $this->task_request( 'POST', 'task', [], $payload );
+        if ( is_wp_error( $body ) ) return $body;
+        if ( ! ctype_digit( (string) ($body['id'] ?? '') ) ) {
+            return new WP_Error( 'evg_task_unconfirmed', 'EasyVerein hat die Anlage nicht bestätigt. Bitte lade die Aufgaben neu und prüfe den Stand.', ['status' => 502] );
+        }
+        return new WP_REST_Response( ['id' => (string) $body['id']], 201 );
+    }
+
+    public function rest_complete_task( WP_REST_Request $request ) {
+        $member_id = $this->task_member_id();
+        if ( $member_id === '' ) {
+            return new WP_Error( 'evg_tasks_member', 'Für Aufgaben ist ein verknüpftes Vereinsmitglied erforderlich.', ['status' => 403] );
+        }
+        $id = (string) $request['id'];
+        $body = $this->task_request( 'GET', 'task', ['responsible_member' => $member_id, 'id__in' => $id, 'limit' => 1] );
+        if ( is_wp_error( $body ) ) return $body;
+        $task = $body['results'][0] ?? [];
+        if ( (string) ($task['id'] ?? '') !== $id ) {
+            return new WP_Error( 'evg_task_missing', 'Diese Aufgabe ist dir nicht zugewiesen.', ['status' => 404] );
+        }
+        if ( ($task['state'] ?? '') !== 'erledigt' ) {
+            $updated = $this->task_request( 'PATCH', 'task/' . $id, [], ['state' => 'erledigt'] );
+            if ( is_wp_error( $updated ) ) return $updated;
+            if ( (string) ($updated['id'] ?? '') !== $id || ($updated['state'] ?? '') !== 'erledigt' ) {
+                return new WP_Error( 'evg_task_unconfirmed', 'EasyVerein hat den Status nicht bestätigt. Bitte lade die Aufgaben neu.', ['status' => 502] );
+            }
+        }
+        return new WP_REST_Response( ['id' => $id, 'state' => 'erledigt'] );
+    }
+
     public function rest_me( WP_REST_Request $request ) {
         $user_id      = get_current_user_id();
         $user         = get_userdata( $user_id );
@@ -619,6 +770,8 @@ HTML;
         }
 
         return new WP_REST_Response( [
+            'tasks_available' => $this->task_member_id() !== '',
+            'can_create_tasks' => $this->task_member_id() !== '' && current_user_can( 'manage_options' ),
             'event_creation_available' => true,
             'can_create_events' => count(EVG_Event_Writes::calendar_ids($user_id))>0,
             'group_requests_available' => true,
