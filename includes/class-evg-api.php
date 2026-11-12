@@ -168,8 +168,14 @@ class EVG_Api {
 
         register_rest_route( 'easyverein-go/v1', '/tasks', [
             'methods' => WP_REST_Server::CREATABLE,
-            'permission_callback' => function () { return current_user_can( 'manage_options' ); },
+            'permission_callback' => $auth,
             'callback' => [$this, 'rest_create_task'],
+        ] );
+
+        register_rest_route( 'easyverein-go/v1', '/task-recipients', [
+            'methods' => WP_REST_Server::READABLE,
+            'permission_callback' => [$this, 'can_assign_tasks'],
+            'callback' => [$this, 'rest_task_recipients'],
         ] );
 
         register_rest_route( 'easyverein-go/v1', '/tasks/(?P<id>[1-9][0-9]*)/complete', [
@@ -608,6 +614,43 @@ HTML;
         return preg_match( '/^[1-9][0-9]*$/D', $id ) ? $id : '';
     }
 
+    public function can_assign_tasks(): bool {
+        return is_user_logged_in() && $this->task_member_id() !== ''
+            && get_user_meta( get_current_user_id(), 'evg_assign_tasks', true ) === '1';
+    }
+
+    /** Nur Namen und IDs aus dem für dieses Konto freigegebenen Mitgliederbestand. */
+    private function task_recipients( string $value, bool $exact = false ): array {
+        global $wpdb;
+        $uid = get_current_user_id();
+        $groups = array_filter( (array) get_user_meta( $uid, 'evg_groups', true ), function ($group) {
+            return is_string($group) || is_int($group);
+        } );
+        $params = [$exact ? $value : '%' . $wpdb->esc_like( $value ) . '%'];
+        $where = $exact ? 'm.member_id = %s' : "CONCAT_WS(' ', m.first_name, m.family_name) LIKE %s";
+        if ( ! get_user_meta( $uid, 'evg_groups_all', true ) ) {
+            if ( ! $groups ) return [];
+            $placeholders = implode( ',', array_fill( 0, count( $groups ), '%s' ) );
+            $where .= " AND EXISTS (SELECT 1 FROM {$wpdb->prefix}evg_member_groups mg
+                WHERE mg.member_id = m.member_id AND mg.group_id IN ($placeholders))";
+            $params = array_merge( $params, $groups );
+        }
+        return (array) $wpdb->get_results( $wpdb->prepare(
+            "SELECT m.member_id, CONCAT_WS(' ', m.first_name, m.family_name) AS name
+             FROM {$wpdb->prefix}evg_members m WHERE {$where}
+             ORDER BY m.family_name, m.first_name, m.member_id LIMIT 20",
+            $params
+        ), ARRAY_A );
+    }
+
+    public function rest_task_recipients( WP_REST_Request $request ) {
+        $query = sanitize_text_field( $request->get_param('search') );
+        $matches = mb_strlen( $query ) >= 2 ? $this->task_recipients( $query ) : [];
+        $response = new WP_REST_Response( $matches );
+        $response->header( 'Cache-Control', 'private, no-store' );
+        return $response;
+    }
+
     private function task_request( string $method, string $path, array $query = [], ?array $payload = null ) {
         $key = (string) get_option( 'evg_api_key', '' );
         if ( $key === '' ) {
@@ -687,10 +730,17 @@ HTML;
         if ( $name === '' || mb_strlen( $name ) > 200 || ! is_string( $description ) || mb_strlen( $description ) > 10000 ) {
             return new WP_Error( 'evg_task_input', 'Bitte einen Titel mit höchstens 200 Zeichen und eine Beschreibung mit höchstens 10.000 Zeichen eingeben.', ['status' => 400] );
         }
+        $recipient = $input['recipient_id'] ?? $member_id;
+        if ( ! is_string( $recipient ) || ! preg_match( '/^[1-9][0-9]*$/D', $recipient ) ) {
+            return new WP_Error( 'evg_task_recipient', 'Bitte ein gültiges Mitglied auswählen.', ['status' => 400] );
+        }
+        if ( $recipient !== $member_id && ( ! $this->can_assign_tasks() || ! $this->task_recipients( $recipient, true ) ) ) {
+            return new WP_Error( 'evg_task_recipient', 'Dieses Mitglied darfst du nicht für eine Aufgabe auswählen.', ['status' => 403] );
+        }
         $payload = [
             'name' => $name,
             'description' => sanitize_textarea_field( $description ),
-            'members' => [(int) $member_id],
+            'members' => [(int) $recipient],
             'public' => false,
             'state' => 'offen',
         ];
@@ -771,7 +821,8 @@ HTML;
 
         return new WP_REST_Response( [
             'tasks_available' => $this->task_member_id() !== '',
-            'can_create_tasks' => $this->task_member_id() !== '' && current_user_can( 'manage_options' ),
+            'can_create_tasks' => $this->task_member_id() !== '',
+            'can_assign_tasks' => $this->can_assign_tasks(),
             'event_creation_available' => true,
             'can_create_events' => count(EVG_Event_Writes::calendar_ids($user_id))>0,
             'group_requests_available' => true,

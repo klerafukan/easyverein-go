@@ -701,6 +701,12 @@ class EVG_Admin {
         }
         $custom_selected = array_map('strval', $custom_selected);
         ?>
+        <h2>EasyVerein Aufgaben</h2>
+        <?php wp_nonce_field('evg_task_permission_' . $user->ID, 'evg_task_permission_nonce'); ?>
+        <label><input type="checkbox" name="evg_assign_tasks" value="1" <?php checked('1', get_user_meta($user->ID, 'evg_assign_tasks', true)); ?>>
+            Darf Aufgaben für andere anlegen
+        </label>
+        <p class="description">Aufgaben können den Mitgliedern zugewiesen werden, die dieses Konto in der Mitgliederliste sehen darf.</p>
         <h2><?php esc_html_e('EasyVerein Gruppen-Zuordnung','ev-groups'); ?></h2>
         <table class="form-table">
             <tr>
@@ -803,6 +809,11 @@ class EVG_Admin {
 
     public function save_user_groups($user_id){
         if (!current_user_can('manage_options')) return;
+        $nonce = $_POST['evg_task_permission_nonce'] ?? '';
+        if (current_user_can('edit_user', $user_id) && is_string($nonce) &&
+            wp_verify_nonce(wp_unslash($nonce), 'evg_task_permission_' . $user_id)) {
+            update_user_meta($user_id, 'evg_assign_tasks', ($_POST['evg_assign_tasks'] ?? '') === '1' ? '1' : '0');
+        }
         $allow_all = isset($_POST['evg_groups_all']) ? 1 : 0;
         update_user_meta($user_id, 'evg_groups_all', $allow_all);
         $ids = isset($_POST['evg_groups_selected']) ? (array) $_POST['evg_groups_selected'] : [];
