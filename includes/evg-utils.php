@@ -337,86 +337,78 @@ function evg_http_get($url,$headers=[],$args=[]){
 }
 
 /**
- * Ordnet einen easyVerein-Login (OIDC sub) einem WP-User zu oder legt ihn an.
- * Gemeinsam genutzt von App-Login (Bearer-Token) und Web-Login.
- *
- * Neue Verknüpfungen nur, wenn
- *  - die E-Mail nicht ausdrücklich als unbestätigt gemeldet wird,
- *  - die E-Mail zu einem synchronisierten Mitglied dieses Vereins gehört
- *    (schützt vor Logins aus fremden easyVerein-Organisationen),
- *  - der gefundene WP-User keine redaktionellen/admin Rechte hat
- *    (solche Konten müssen per evg_oidc_sub manuell verknüpft werden).
+ * Verwendet eine vorhandene OIDC-Verknüpfung oder legt sie bei einer eindeutigen
+ * E-Mail-Zuordnung an. App und Website verwenden denselben Anmeldeweg.
  */
 function evg_find_or_provision_oidc_user($sub, array $userinfo){
     global $wpdb;
     $sub = sanitize_text_field((string) $sub);
-    if ($sub === '') {
-        return null;
-    }
+    if ($sub === '') return null;
 
-    $users = get_users([
-        'meta_key'   => 'evg_oidc_sub',
-        'meta_value' => $sub,
-        'number'     => 1,
-        'fields'     => 'ids',
-    ]);
-    if (!empty($users)) {
-        return (int) $users[0];
-    }
+    // Zwei gleichzeitige Erstanmeldungen dürfen keine Verknüpfung überschreiben.
+    $lock = 'evg_oidc_' . substr(hash('sha256', DB_NAME . ':' . $wpdb->users), 0, 48);
+    if ((string) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $lock)) !== '1') return null;
+    try {
+        $users = get_users([
+            'meta_key' => 'evg_oidc_sub',
+            'meta_value' => $sub,
+            'number' => 2,
+            'fields' => 'ids',
+        ]);
+        if ($users) return count($users) === 1 ? (int) $users[0] : null;
 
-    $email = strtolower(sanitize_email($userinfo['email'] ?? ''));
-    if ($email === '') {
-        error_log('[EVG OIDC] Keine E-Mail in userinfo, sub=' . $sub);
-        return null;
-    }
-    if (array_key_exists('email_verified', $userinfo) && !filter_var($userinfo['email_verified'], FILTER_VALIDATE_BOOLEAN)) {
-        error_log('[EVG OIDC] E-Mail nicht bestätigt, sub=' . $sub);
-        return null;
-    }
+        $email = strtolower(sanitize_email($userinfo['email'] ?? ''));
+        if ($email === '' || (array_key_exists('email_verified', $userinfo) &&
+            !filter_var($userinfo['email_verified'], FILTER_VALIDATE_BOOLEAN))) return null;
 
-    $member_id = (string) $wpdb->get_var($wpdb->prepare(
-        "SELECT member_id FROM {$wpdb->prefix}evg_members WHERE LOWER(email_private) = %s LIMIT 1",
-        $email
-    ));
-    $existing = get_user_by('email', $email);
-    $existing_member_id = $existing ? (string) get_user_meta($existing->ID, 'evg_member_id', true) : '';
+        $members = $wpdb->get_col($wpdb->prepare(
+            "SELECT DISTINCT member_id FROM {$wpdb->prefix}evg_members
+             WHERE LOWER(TRIM(email_private)) = %s LIMIT 2",
+            $email
+        ));
+        if ($wpdb->last_error || count($members) !== 1 || (string) $members[0] === '') return null;
+        $member_id = (string) $members[0];
 
-    if ($member_id === '' && $existing_member_id === '') {
-        error_log('[EVG OIDC] Kein Mitglied dieses Vereins, sub=' . $sub);
-        return null;
-    }
+        $accounts = $wpdb->get_col($wpdb->prepare(
+            "SELECT ID FROM {$wpdb->users} WHERE LOWER(TRIM(user_email)) = %s LIMIT 2",
+            $email
+        ));
+        if ($wpdb->last_error || count($accounts) > 1) return null;
 
-    if ($existing) {
-        if (user_can($existing, 'edit_posts')) {
-            error_log('[EVG OIDC] Automatische Verknüpfung mit privilegiertem Konto abgelehnt, user=' . $existing->ID);
+        if ($accounts) {
+            $user_id = (int) $accounts[0];
+            $existing = get_userdata($user_id);
+            $existing_member_id = (string) get_user_meta($user_id, 'evg_member_id', true);
+            if (!$existing || user_can($existing, 'edit_posts') || user_can($existing, 'manage_options') ||
+                (string) get_user_meta($user_id, 'evg_oidc_sub', true) !== '' ||
+                ($existing_member_id !== '' && $existing_member_id !== $member_id)) return null;
+
+            if ($existing_member_id === '' && !update_user_meta($user_id, 'evg_member_id', $member_id)) return null;
+            return update_user_meta($user_id, 'evg_oidc_sub', $sub) ? $user_id : null;
+        }
+
+        $name  = sanitize_text_field($userinfo['name'] ?? '');
+        $parts = explode(' ', $name, 2);
+        $user_id = wp_insert_user([
+            'user_login'   => $email,
+            'user_email'   => $email,
+            'user_pass'    => wp_generate_password(32, true, true),
+            'first_name'   => sanitize_text_field($parts[0] ?? ''),
+            'last_name'    => sanitize_text_field($parts[1] ?? ''),
+            'display_name' => $name ?: $email,
+            'role'         => 'subscriber',
+        ]);
+        if (is_wp_error($user_id)) {
+            error_log('[EVG OIDC] Auto-Provision fehlgeschlagen für sub=' . $sub . ': ' . $user_id->get_error_message());
             return null;
         }
-        update_user_meta($existing->ID, 'evg_oidc_sub', $sub);
-        if ($member_id !== '') {
-            update_user_meta($existing->ID, 'evg_member_id', $member_id);
-        }
-        return (int) $existing->ID;
-    }
 
-    $name  = sanitize_text_field($userinfo['name'] ?? '');
-    $parts = explode(' ', $name, 2);
-    $user_id = wp_insert_user([
-        'user_login'   => $email,
-        'user_email'   => $email,
-        'user_pass'    => wp_generate_password(32, true, true),
-        'first_name'   => sanitize_text_field($parts[0] ?? ''),
-        'last_name'    => sanitize_text_field($parts[1] ?? ''),
-        'display_name' => $name ?: $email,
-        'role'         => 'subscriber',
-    ]);
-    if (is_wp_error($user_id)) {
-        error_log('[EVG OIDC] Auto-Provision fehlgeschlagen für sub=' . $sub . ': ' . $user_id->get_error_message());
-        return null;
+        if (!update_user_meta($user_id, 'evg_member_id', $member_id)) return null;
+        if (!update_user_meta($user_id, 'evg_oidc_sub', $sub)) return null;
+        // Admin muss Gruppen manuell zuweisen – neuer User sieht standardmäßig nichts
+        update_user_meta($user_id, 'evg_groups_all', 0);
+        return (int) $user_id;
+    } finally {
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
     }
-
-    update_user_meta($user_id, 'evg_oidc_sub', $sub);
-    update_user_meta($user_id, 'evg_member_id', $member_id);
-    // Admin muss Gruppen manuell zuweisen – neuer User sieht standardmäßig nichts
-    update_user_meta($user_id, 'evg_groups_all', 0);
-    return (int) $user_id;
 }
